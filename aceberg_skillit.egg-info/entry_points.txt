@@ -1,0 +1,2 @@
+[console_scripts]
+skillit = skillit.cli:main

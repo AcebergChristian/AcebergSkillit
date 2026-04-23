@@ -1,0 +1,17 @@
+[project]
+name = "aceberg-skillit"
+version = "0.1.0"
+description = "Lightweight Hermes-style skill executor with compressed memory"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+skillit = "skillit.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["skillit*"]
