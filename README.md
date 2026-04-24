@@ -13,6 +13,7 @@
 - `sessions/manifest.json` 会话索引
 - `sessions/<session_id>/` 会话内容文件
 - `docs/ARCHITECTURE.md` 架构说明
+- `docs/ARCHITECTURE_DIAGRAMS.md` Mermaid 架构图与时序图
 
 ## 快速开始
 

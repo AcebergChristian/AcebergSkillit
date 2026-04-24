@@ -112,7 +112,7 @@ def main() -> None:
             _print_sessions(agent)
             continue
 
-        out = _run_with_spinner(agent.run_turn, text, session_id=active_session, label="processing")
+        out = _run_with_spinner(agent.run_turn, text, session_id=active_session, label="processing.........")
         active_session = out["session_id"]
         print("bot>", out["reply"])
 
