@@ -67,6 +67,7 @@ class AgentExecutor:
     def list_sessions(self) -> list[dict]:
         return self.sessions.list_sessions()
 
+    # 运行一次对话
     def run_turn(self, user_input: str, session_id: str | None = None) -> dict:
         sid = self.sessions.ensure(session_id)
         skill = self.router.route(user_input, self.skills)
@@ -83,7 +84,11 @@ class AgentExecutor:
         for step in plan.steps:
             if step.kind != "tool":
                 continue
+
+            # 解析工具输入
             resolved_input = self._resolve_tool_input(step.tool_input, step_result_map)
+
+            # 运行工具
             result = self.tools.run(step.tool, resolved_input)
             payload = {
                 "ts": utc_now(),
@@ -94,10 +99,14 @@ class AgentExecutor:
                 "input": resolved_input,
                 "result": result,
             }
-            tool_results.append(payload)
-            step_result_map[step.id] = payload
-            self.sessions.append_tool_result(sid, payload)
 
+            # 存储工具结果
+            tool_results.append(payload)
+            # 更新工具结果映射
+            step_result_map[step.id] = payload
+            # 存储工具结果到会话
+            self.sessions.append_tool_result(sid, payload)
+        
         tool_summary = self._render_tool_summary(tool_results)
         plan_summary = self._render_plan(plan)
 

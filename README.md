@@ -121,6 +121,25 @@ sessions/
 
 `manifest.json` 保存 active session 和每个 session 文件指针。
 
+说明：
+- 旧版 `memory/memory.jsonl` 已弃用并移除。
+- 当前记忆统一按会话存储在 `sessions/<sid>/memories.jsonl`。
+
+## 记忆管理链路（抽取 / 压缩 / 召回）
+
+代码位置：
+- 抽取：`skillit/memory.py` 的 `MemoryExtractor.extract()`
+- 召回：`skillit/session_store.py` 的 `load_memories()`
+- 压缩：`skillit/memory.py` 的 `compact_memories()`
+- 注入上下文：`skillit/executor.py` + `skillit/compressor.py`
+
+执行时序（每轮）：
+1. 从会话读取 `memories.jsonl`（召回）
+2. `compact_memories` 压缩成摘要字符串
+3. 摘要注入 prompt 的 `# Retrieved Memory`
+4. 对 user/reply 做 `MemoryExtractor.extract`
+5. 新记忆追加写回该会话的 `memories.jsonl`
+
 ## 运行时流水线
 
 1. 路由 skill
