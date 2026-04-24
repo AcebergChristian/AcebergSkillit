@@ -1,4 +1,5 @@
 ---
+id: memory_manager
 name: MemoryManager
 description: session memory extraction and compression behavior
 triggers: memory,记忆,上下文,会话,压缩,recall

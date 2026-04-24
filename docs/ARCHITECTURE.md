@@ -31,7 +31,7 @@
 ## 3. 组件职责
 
 - `planner.py`：计划生成
-- `tools.py`：内置工具注册与执行（4 tools: list/read/search/write）
+- `tools.py`：内置工具注册与执行（5 tools: list/read/search/write/run_skill_script）
 - `session_store.py`：会话索引、读写、切换
 - `executor.py`：流水线编排
 - `compressor.py`：上下文压缩
@@ -39,6 +39,7 @@
 
 ## 4. 轻量设计原则
 
-- skill 行为约束放到 `skills/*.md`
+- skill 行为约束放到 `skills/<skill_id>/skill.md`
+- skill 侧脚本放到 `skills/<skill_id>/scripts/*`
 - 运行时只做必要编排，不做重型 workflow engine
 - 默认标准库，避免依赖膨胀

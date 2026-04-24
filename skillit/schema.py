@@ -51,11 +51,14 @@ class MemoryItem:
 
 @dataclass(slots=True)
 class Skill:
+    id: str
     name: str
     description: str
     triggers: list[str]
     body: str
     path: str
+    root_dir: str = ""
+    scripts: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

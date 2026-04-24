@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 
 class ToolRegistry:
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(self, workspace_root: Path, script_index: dict[str, dict[str, str]] | None = None) -> None:
         self.workspace_root = workspace_root.resolve()
+        self.script_index = script_index or {}
 
     def list_tools(self) -> list[dict]:
         return [
@@ -13,6 +18,10 @@ class ToolRegistry:
             {"name": "read_text", "desc": "Read text content from a file."},
             {"name": "search_text", "desc": "Search keyword in files recursively."},
             {"name": "write_text", "desc": "Write or append text to a file."},
+            {
+                "name": "run_skill_script",
+                "desc": "Run a local script from skills/<skill>/scripts/.",
+            },
         ]
 
     def run(self, name: str, params: dict) -> dict:
@@ -71,6 +80,72 @@ class ToolRegistry:
         else:
             target.write_text(content, encoding="utf-8")
         return {"path": str(target), "size": len(content), "mode": mode}
+
+    def tool_run_skill_script(self, params: dict) -> dict:
+        timeout_sec = int(params.get("timeout_sec", 20))
+        payload = params.get("input", {})
+        script_path = self._resolve_script_path(params)
+
+        cmd = self._build_cmd(script_path)
+        env = dict(os.environ)
+        env["SKILLIT_INPUT_JSON"] = json.dumps(payload, ensure_ascii=False)
+
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(payload, ensure_ascii=False),
+            text=True,
+            capture_output=True,
+            timeout=timeout_sec,
+            env=env,
+        )
+
+        stdout = (proc.stdout or "").strip()
+        stderr = (proc.stderr or "").strip()
+        parsed_stdout = self._maybe_json(stdout)
+
+        return {
+            "script": str(script_path),
+            "exit_code": proc.returncode,
+            "stdout": parsed_stdout,
+            "stderr": stderr,
+        }
+
+    def _resolve_script_path(self, params: dict) -> Path:
+        # Option A: direct path
+        raw = params.get("path")
+        if raw:
+            return self._safe_path(str(raw))
+
+        # Option B: skill + script name
+        skill = str(params.get("skill", "")).strip().lower()
+        script = str(params.get("script", "")).strip()
+        if not skill or not script:
+            raise ValueError("run_skill_script requires path, or skill+script")
+        script_map = self.script_index.get(skill, {})
+        real = script_map.get(script)
+        if not real:
+            raise ValueError(f"script not found: skill={skill} script={script}")
+        return self._safe_path(real)
+
+    @staticmethod
+    def _build_cmd(script_path: Path) -> list[str]:
+        ext = script_path.suffix.lower()
+        if ext == ".py":
+            return [sys.executable, str(script_path)]
+        if ext == ".sh":
+            return ["/bin/sh", str(script_path)]
+        if ext == ".js":
+            return ["node", str(script_path)]
+        return [str(script_path)]
+
+    @staticmethod
+    def _maybe_json(text: str):
+        if not text:
+            return ""
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
 
     def _safe_path(self, raw: str) -> Path:
         if not raw:

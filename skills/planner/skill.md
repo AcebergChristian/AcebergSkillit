@@ -1,4 +1,5 @@
 ---
+id: planner
 name: Planner
 description: force explicit planning and dependency-aware steps
 triggers: plan,规划,步骤,拆解,roadmap

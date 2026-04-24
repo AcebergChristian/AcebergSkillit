@@ -1,6 +1,6 @@
 # Aceberg SkillIt (Lightweight)
 
-轻量版 Hermes 风格 Agent Runtime（Python，平铺 skills）：
+轻量版 Hermes 风格 Agent Runtime（Python，Skill Pack 结构）：
 - 强制 `Plan -> Tool -> Respond`
 - 本地会话管理（manifest 指向每个会话的 JSON/JSONL 文件）
 - 上下文压缩 + 会话级记忆管理
@@ -9,11 +9,12 @@
 ## 目录
 
 - `skillit/` 核心代码
-- `skills/` 平铺 skill 文件（Markdown + front matter）
+- `skills/` Skill Pack 目录（`skill.md` + `scripts/`）
 - `sessions/manifest.json` 会话索引
 - `sessions/<session_id>/` 会话内容文件
 - `docs/ARCHITECTURE.md` 架构说明
 - `docs/ARCHITECTURE_DIAGRAMS.md` Mermaid 架构图与时序图
+- `docs/SKILL_PACK_DESIGN.md` Skill 架构设计与主流方案对比
 
 ## 快速开始
 
@@ -58,18 +59,35 @@ export SKILLIT_MODEL="你的模型名"
 export SKILLIT_API_STYLE="chat_completions"
 ```
 
-## Skill 格式（平铺）
+## Skill 格式（Skill Pack）
 
-在 `skills/` 下新建 `xxx.md`：
+在 `skills/` 下新建目录：
+
+```text
+skills/
+  my_skill/
+    skill.md
+    scripts/
+      run.py
+```
+
+`skill.md` 示例：
 
 ```md
 ---
+id: my_skill
 name: MySkill
 description: short description
 triggers: keyword1,keyword2
 ---
 你的技能提示词正文
 ```
+
+脚本约定：
+- 放在 `skills/<id>/scripts/`
+- 支持 `.py/.sh/.js`
+- 可通过工具 `run_skill_script` 执行
+- 输入通过 `SKILLIT_INPUT_JSON` 传入（JSON 字符串）
 
 内置 skills（当前）：
 - `Default`
@@ -78,7 +96,7 @@ triggers: keyword1,keyword2
 - `FileOps`
 - `MemoryManager`
 
-## 内置工具（Hermes 风格 4 个）
+## 内置工具（当前 5 个）
 
 工具实现位置：[tools.py](/Users/Aceberg/Desktop/MySelf_Dev/AcebergSkillit/skillit/tools.py)
 
@@ -86,6 +104,7 @@ triggers: keyword1,keyword2
 - `read_text`: 读文件
 - `search_text`: 全局搜索
 - `write_text`: 写文件（覆盖/追加）
+- `run_skill_script`: 运行 skill 包内本地脚本
 
 ## 会话文件结构
 

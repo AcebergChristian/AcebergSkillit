@@ -1,4 +1,5 @@
 ---
+id: default
 name: Default
 description: generic assistant skill
 triggers: help, explain, general

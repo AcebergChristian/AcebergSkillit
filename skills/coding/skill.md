@@ -1,4 +1,5 @@
 ---
+id: coding
 name: Coding
 description: code-focused skill
 triggers: code, python, bug, fix, refactor, test

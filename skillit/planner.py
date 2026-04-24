@@ -13,6 +13,7 @@ class Planner:
         "read_text": ["read", "查看", "读取", "内容"],
         "search_text": ["search", "grep", "查找", "搜索"],
         "write_text": ["write", "创建", "写入", "保存"],
+        "run_skill_script": ["script", "脚本", "执行脚本", "run script"],
     }
 
     def build_plan(self, user_input: str, history: list[Turn]) -> Plan:
@@ -100,6 +101,26 @@ class Planner:
                     )
                 )
 
+            elif op == "run_skill_script":
+                skill_id = self._extract_named_value(text, "skill") or self._extract_named_value(text, "技能")
+                script_name = self._extract_named_value(text, "script") or self._extract_named_value(text, "脚本")
+                tool_input = {"input": {"query": text}}
+                if skill_id and script_name:
+                    tool_input.update({"skill": skill_id, "script": script_name})
+                elif script_name:
+                    tool_input.update({"path": script_name})
+                else:
+                    continue
+                steps.append(
+                    PlanStep(
+                        id="",
+                        kind="tool",
+                        description="Run local skill script for task-specific execution.",
+                        tool="run_skill_script",
+                        tool_input=tool_input,
+                    )
+                )
+
         return steps
 
     def _infer_ops_order(self, text: str) -> list[str]:
@@ -108,13 +129,22 @@ class Planner:
         for op, keys in self.OPS.items():
             pos = -1
             for k in keys:
-                p = low.find(k)
+                p = self._find_key_pos(low, k.lower())
                 if p != -1 and (pos == -1 or p < pos):
                     pos = p
             if pos != -1:
                 points.append((pos, op))
         points.sort(key=lambda x: x[0])
         return [op for _, op in points]
+
+    @staticmethod
+    def _find_key_pos(text: str, key: str) -> int:
+        # ASCII tokens use word boundary to reduce false positives
+        if re.fullmatch(r"[a-z0-9_ -]+", key):
+            pattern = r"\b" + re.escape(key) + r"\b"
+            m = re.search(pattern, text)
+            return m.start() if m else -1
+        return text.find(key)
 
     @staticmethod
     def _extract_path(text: str) -> str | None:
@@ -134,4 +164,11 @@ class Planner:
         single = re.search(r"'([^']+)'", text)
         if single:
             return single.group(1).strip()
+        return None
+
+    @staticmethod
+    def _extract_named_value(text: str, key: str) -> str | None:
+        p = re.search(rf"{re.escape(key)}\s*[:=]\s*([\w./\-]+)", text, flags=re.I)
+        if p:
+            return p.group(1).strip()
         return None

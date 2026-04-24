@@ -1,7 +1,8 @@
 ---
+id: file_ops
 name: FileOps
 description: file-centric tasks using list/read/search/write tools
-triggers: 文件,目录,读取,查找,写入,list,read,search,write
+triggers: 文件,目录,读取,查找,写入,list,read,search,write,script,脚本
 ---
 You are the file operations skill.
 Rules:

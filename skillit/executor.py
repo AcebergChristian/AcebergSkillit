@@ -28,11 +28,14 @@ class SkillRouter:
                 best_score = score
                 best = s
         return best or Skill(
+            id="default",
             name="default",
             description="fallback skill",
             triggers=[],
             body="You are a concise assistant. Follow plan first, then answer directly.",
             path="inline://default",
+            root_dir="",
+            scripts=[],
         )
 
 
@@ -41,15 +44,19 @@ class AgentExecutor:
         self.cfg = cfg or RuntimeConfig()
         self.skills = load_skills(Path(self.cfg.skills_dir))
         self.soul_prompt = self._load_soul(Path(self.cfg.soul_file))
+        self.skill_script_index = self._build_skill_script_index(self.skills)
         self.router = SkillRouter()
         self.sessions = SessionStore(Path(self.cfg.sessions_dir))
         self.extractor = MemoryExtractor()
         self.planner = Planner()
-        self.tools = ToolRegistry(workspace_root=Path.cwd())
+        self.tools = ToolRegistry(workspace_root=Path.cwd(), script_index=self.skill_script_index)
         self.llm = llm or OpenAIResponsesLLM()
 
     def list_skills(self) -> list[str]:
-        return [f"{s.name} ({','.join(s.triggers)})" for s in self.skills]
+        out = []
+        for s in self.skills:
+            out.append(f"{s.name}#{s.id} ({','.join(s.triggers)}) scripts={len(s.scripts)}")
+        return out
 
     def list_tools(self) -> list[dict]:
         return self.tools.list_tools()
@@ -201,3 +208,15 @@ class AgentExecutor:
             return path.read_text(encoding="utf-8").strip()
         except OSError:
             return ""
+
+    @staticmethod
+    def _build_skill_script_index(skills: list[Skill]) -> dict[str, dict[str, str]]:
+        idx: dict[str, dict[str, str]] = {}
+        for s in skills:
+            sid = (s.id or s.name).lower()
+            scripts: dict[str, str] = {}
+            for p in s.scripts:
+                script_name = Path(p).name
+                scripts[script_name] = p
+            idx[sid] = scripts
+        return idx

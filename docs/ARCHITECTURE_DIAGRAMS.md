@@ -12,14 +12,14 @@ flowchart TB
 
     SR[SkillRouter]
     PL[Planner]
-    TR[ToolRegistry\nlist/read/search/write]
+    TR[ToolRegistry\nlist/read/search/write/run_skill_script]
     SS[SessionStore]
     CM[Context Builder / Compressor]
     ME[MemoryExtractor]
     LLM[LLM Client\nresponses/chat_completions]
 
     SOUL[soul.md]
-    SK[skills/*.md]
+    SK[skills/<skill_id>/skill.md]
     SESS[sessions/\nmanifest + jsonl files]
 
     U --> CLI
