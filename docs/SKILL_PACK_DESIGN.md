@@ -11,13 +11,19 @@
 ```text
 skills/
   <skill_id>/
-    skill.md
+    SKILL.md
     scripts/
       *.py | *.sh | *.js
+    references/
+      *.md | *.txt | *.json
+    assets/
+      *
 ```
 
-- `skill.md`：声明 skill 元信息与提示词
+- `SKILL.md`：声明 skill 元信息与提示词
 - `scripts/`：存放可执行脚本（被 `run_skill_script` 调用）
+- `references/`：存放知识参考、模板、规则说明
+- `assets/`：存放图片、样例文件、静态素材
 
 这是一个轻量但实用的中间形态：
 - 比“纯 prompt”更能落地动作
@@ -43,7 +49,7 @@ skills/
 
 ### 方案 B：Skill Pack（当前方案）
 
-结构：`skill.md + scripts/`
+结构：`SKILL.md + scripts/ + references/ + assets/`
 
 优点：
 - 技能定义和执行能力聚合在一起
@@ -77,8 +83,8 @@ skills/
 
 ## 3. 当前项目的“主流化改造点”
 
-1. `Skill` 数据结构支持 `id/root_dir/scripts`
-2. Loader 优先读取目录化 Skill Pack，兼容旧版 flat md
+1. `Skill` 数据结构支持 `id/root_dir/scripts/references/assets`
+2. Loader 优先读取目录化 Skill Pack，优先 `SKILL.md`，兼容 `skill.md` 和旧版 flat md
 3. ToolRegistry 新增 `run_skill_script`
 4. Planner 能规划脚本执行 step（`skill=<id> script=<name>`）
 5. 会话日志可记录脚本执行输入与结果

@@ -59,6 +59,8 @@ class Skill:
     path: str
     root_dir: str = ""
     scripts: list[str] = field(default_factory=list)
+    references: list[str] = field(default_factory=list)
+    assets: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

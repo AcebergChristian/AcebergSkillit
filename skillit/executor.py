@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from .compressor import build_context
-from .config import RuntimeConfig
+from .config import RuntimeConfig, load_dotenv
 from .llm import BaseLLM, OpenAIResponsesLLM
 from .memory import MemoryExtractor, compact_memories
 from .planner import Planner
@@ -36,11 +36,14 @@ class SkillRouter:
             path="inline://default",
             root_dir="",
             scripts=[],
+            references=[],
+            assets=[],
         )
 
 
 class AgentExecutor:
     def __init__(self, cfg: RuntimeConfig | None = None, llm: BaseLLM | None = None) -> None:
+        load_dotenv()
         self.cfg = cfg or RuntimeConfig()
         self.skills = load_skills(Path(self.cfg.skills_dir))
         self.soul_prompt = self._load_soul(Path(self.cfg.soul_file))
@@ -55,7 +58,10 @@ class AgentExecutor:
     def list_skills(self) -> list[str]:
         out = []
         for s in self.skills:
-            out.append(f"{s.name}#{s.id} ({','.join(s.triggers)}) scripts={len(s.scripts)}")
+            out.append(
+                f"{s.name}#{s.id} ({','.join(s.triggers)}) "
+                f"scripts={len(s.scripts)} refs={len(s.references)} assets={len(s.assets)}"
+            )
         return out
 
     def list_tools(self) -> list[dict]:

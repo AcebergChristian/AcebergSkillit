@@ -19,7 +19,7 @@ flowchart TB
     LLM[LLM Client\nresponses/chat_completions]
 
     SOUL[soul.md]
-    SK[skills/<skill_id>/skill.md]
+    SK[skills/<skill_id>/SKILL.md]
     SESS[sessions/\nmanifest + jsonl files]
 
     U --> CLI

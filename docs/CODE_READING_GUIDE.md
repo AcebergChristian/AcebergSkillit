@@ -19,7 +19,7 @@ SkillIt 是一个轻量 Agent Runtime，核心是：
 - 会话级本地持久化（sessions 目录）
 - 可压缩上下文
 - 规则型记忆抽取
-- Skill Pack 配置（`skill.md` + `scripts/`）
+- Skill Pack 配置（`SKILL.md` + `scripts/` + `references/` + `assets/`）
 - 全局人格注入（soul.md）
 
 ---
@@ -30,7 +30,7 @@ SkillIt 是一个轻量 Agent Runtime，核心是：
 
 关键目录：
 - `skillit/`: 运行时核心代码
-- `skills/`: Skill Pack 目录（skill.md + scripts/）
+- `skills/`: Skill Pack 目录（SKILL.md + scripts + references + assets）
 - `sessions/`: 会话索引与会话数据
 - `soul.md`: 全局人格
 - `app.py`: import 方式最小示例
@@ -50,7 +50,7 @@ SkillIt 是一个轻量 Agent Runtime，核心是：
 7. `skillit/memory.py`
 8. `skillit/llm.py`
 9. `skillit/schema.py`
-10. `skills/<skill_id>/skill.md` + `skills/<skill_id>/scripts/*` + `soul.md`
+10. `skills/<skill_id>/SKILL.md` + `skills/<skill_id>/scripts/*` + `skills/<skill_id>/references/*` + `skills/<skill_id>/assets/*` + `soul.md`
 
 原因：这是最符合真实调用链的顺序。
 
@@ -154,11 +154,12 @@ SkillIt 是一个轻量 Agent Runtime，核心是：
 
 职责：内置工具注册与执行。
 
-内置四工具：
+内置五工具：
 1. `list_files`
 2. `read_text`
 3. `search_text`
 4. `write_text`
+5. `run_skill_script`
 
 安全边界：
 - `_safe_path()` 限定路径在 workspace 根目录内。
@@ -260,7 +261,7 @@ SkillIt 是一个轻量 Agent Runtime，核心是：
 职责：加载 Skill Pack（目录）与兼容旧版 flat md。
 
 行为：
-- 优先读取 `skills/<skill_id>/skill.md`，兼容读取 `skills/*.md`
+- 优先读取 `skills/<skill_id>/SKILL.md`，兼容读取 `skills/<skill_id>/skill.md` 与 `skills/*.md`
 - 解析 front matter (`name/description/triggers`)
 - 生成 `Skill` 列表
 
@@ -283,7 +284,7 @@ SkillIt 是一个轻量 Agent Runtime，核心是：
 
 ## 6. Skills 与 Soul 的角色边界
 
-### Skills (`skills/<skill_id>/skill.md`)
+### Skills (`skills/<skill_id>/SKILL.md`)
 
 用途：
 - 任务域内行为约束（比如 coding、file ops）

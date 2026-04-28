@@ -39,7 +39,9 @@
 
 ## 4. 轻量设计原则
 
-- skill 行为约束放到 `skills/<skill_id>/skill.md`
+- skill 行为约束放到 `skills/<skill_id>/SKILL.md`
 - skill 侧脚本放到 `skills/<skill_id>/scripts/*`
+- skill 参考资料放到 `skills/<skill_id>/references/*`
+- skill 静态资源放到 `skills/<skill_id>/assets/*`
 - 运行时只做必要编排，不做重型 workflow engine
 - 默认标准库，避免依赖膨胀

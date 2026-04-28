@@ -20,7 +20,7 @@ class ToolRegistry:
             {"name": "write_text", "desc": "Write or append text to a file."},
             {
                 "name": "run_skill_script",
-                "desc": "Run a local script from skills/<skill>/scripts/.",
+                "desc": "Run a local script from skills/<skill>/scripts/ inside a skill pack.",
             },
         ]
 

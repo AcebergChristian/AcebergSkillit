@@ -9,7 +9,7 @@
 ## 目录
 
 - `skillit/` 核心代码
-- `skills/` Skill Pack 目录（`skill.md` + `scripts/`）
+- `skills/` Skill Pack 目录（`SKILL.md` + `scripts/` + `references/` + `assets/`）
 - `sessions/manifest.json` 会话索引
 - `sessions/<session_id>/` 会话内容文件
 - `docs/ARCHITECTURE.md` 架构说明
@@ -29,6 +29,24 @@ skillit --new-session
 
 设置 `OPENAI_API_KEY` 时调用 OpenAI Responses API；
 未设置时自动回退 echo 模式，方便调试执行链路。
+
+推荐做法：在项目根目录创建 `.env`，SkillIt 启动时会自动加载。
+可以直接从 `.env.example` 复制：
+
+```bash
+cp .env.example .env
+```
+
+也可以直接用 CLI 管理配置：
+
+```bash
+skillit config set api-key "your-api-key"
+skillit config set base-url "https://dashscope.aliyuncs.com/compatible-mode/v1"
+skillit config set model "qwen-plus"
+skillit config set api-style "chat_completions"
+skillit config show
+skillit config probe
+```
 
 ## 对接你自己的 API / Key
 
@@ -59,6 +77,13 @@ export SKILLIT_MODEL="你的模型名"
 export SKILLIT_API_STYLE="chat_completions"
 ```
 
+验证配置是否生效：
+
+```bash
+skillit --health
+skillit --health --probe
+```
+
 ## Skill 格式（Skill Pack）
 
 在 `skills/` 下新建目录：
@@ -66,12 +91,16 @@ export SKILLIT_API_STYLE="chat_completions"
 ```text
 skills/
   my_skill/
-    skill.md
+    SKILL.md
     scripts/
       run.py
+    references/
+      notes.md
+    assets/
+      .gitkeep
 ```
 
-`skill.md` 示例：
+`SKILL.md` 示例：
 
 ```md
 ---
@@ -88,6 +117,11 @@ triggers: keyword1,keyword2
 - 支持 `.py/.sh/.js`
 - 可通过工具 `run_skill_script` 执行
 - 输入通过 `SKILLIT_INPUT_JSON` 传入（JSON 字符串）
+
+资源目录约定：
+- `references/`：放 prompt 参考资料、领域说明、模板、规范文档
+- `assets/`：放图片、样例数据、静态资源等非脚本文件
+- 这两个目录当前不执行，但会被 loader 识别并计入 skill 元数据
 
 内置 skills（当前）：
 - `Default`
