@@ -12,8 +12,8 @@ class Planner:
         "list_files": ["list", "ls", "目录", "文件列表", "列出"],
         "read_text": ["read", "查看", "读取", "内容"],
         "search_text": ["search", "grep", "查找", "搜索"],
-        "write_text": ["write", "创建", "写入", "保存"],
-        "run_skill_script": ["script", "脚本", "执行脚本", "run script"],
+        "write_text": ["write", "创建", "写", "写入", "生成", "保存", "脚本", "python脚本", "py脚本"],
+        "run_skill_script": ["执行脚本", "运行脚本", "run script"],
     }
 
     def build_plan(self, user_input: str, history: list[Turn]) -> Plan:
@@ -90,6 +90,8 @@ class Planner:
                     )
 
             elif op == "write_text":
+                if self._is_code_generation_request(text):
+                    continue
                 write_path = self._extract_path(text) or "./output.txt"
                 steps.append(
                     PlanStep(
@@ -157,6 +159,33 @@ class Planner:
         return None
 
     @staticmethod
+    def extract_dir_path(text: str) -> str | None:
+        backtick = re.search(r"`([^`]+/)`", text)
+        if backtick:
+            return backtick.group(1).strip()
+
+        chinese_folder = re.search(r"/?([\w\-]+)/?\s*文件夹下\s*([\w\-]+/)", text)
+        if chinese_folder:
+            head = chinese_folder.group(1).strip().strip("/")
+            tail = chinese_folder.group(2).strip().lstrip("/")
+            return f"./{head}/{tail}"
+
+        dirs = re.findall(r"([./~]?[\w\-]+/)", text)
+        if not dirs:
+            return None
+
+        # Merge adjacent directory fragments like "/download" + "test/" -> "/download/test/"
+        merged = dirs[0]
+        for frag in dirs[1:]:
+            if merged.endswith("/") and frag.startswith("/"):
+                merged += frag[1:]
+            elif merged.endswith("/"):
+                merged += frag
+            else:
+                merged += "/" + frag
+        return merged
+
+    @staticmethod
     def _extract_pattern(text: str) -> str | None:
         quoted = re.search(r'"([^"]+)"', text)
         if quoted:
@@ -172,3 +201,12 @@ class Planner:
         if p:
             return p.group(1).strip()
         return None
+
+    @staticmethod
+    def _is_code_generation_request(text: str) -> bool:
+        low = text.lower()
+        has_create = any(token in text for token in ["写", "创建", "生成", "保存"])
+        has_code = any(token in text for token in ["脚本", "代码", "函数"]) or any(
+            token in low for token in ["python", ".py", "javascript", ".js", "bash", ".sh"]
+        )
+        return has_create and has_code

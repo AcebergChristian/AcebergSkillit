@@ -8,6 +8,11 @@ import time
 from .config import CONFIG_ENV_KEYS, get_dotenv_value, resolve_config_key, set_dotenv_value
 from .executor import AgentExecutor
 
+try:
+    import readline
+except ImportError:  # pragma: no cover
+    readline = None
+
 
 def _print_config_help() -> None:
     print("config keys:")
@@ -147,8 +152,61 @@ def _print_once_output(out: dict) -> None:
             print(f"- {step['id']} [tool] {step.get('tool', '')}{dep} input={step.get('tool_input', {})}")
         else:
             print(f"- {step['id']} [{step['kind']}] {step['description']}")
+    _print_tool_trace(out.get("tool_results", []))
     print("reply:")
     print(out["reply"])
+
+
+def _clip_text(value, max_lines: int = 6, max_chars: int = 500) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    lines = text.splitlines()[:max_lines]
+    clipped = []
+    total = 0
+    for line in lines:
+        if total >= max_chars:
+            break
+        remain = max_chars - total
+        clipped_line = line[:remain]
+        clipped.append(clipped_line)
+        total += len(clipped_line)
+    return clipped
+
+
+def _print_tool_trace(tool_results: list[dict]) -> None:
+    if not tool_results:
+        return
+    print("trace:")
+    for item in tool_results:
+        tool = item.get("tool", "")
+        result = item.get("result", {}) or {}
+        ok = result.get("ok")
+        data = result.get("data", {}) if isinstance(result, dict) else {}
+        prefix = "ok" if ok else "fail"
+        print(f"- [{item.get('step_id', '?')}] {tool} -> {prefix}")
+        if tool == "write_text" and ok:
+            print(f"  path: {data.get('path', '')}")
+            print(f"  size: {data.get('size', '?')}")
+        elif tool in {"run_local_script", "run_skill_script"} and ok:
+            print(f"  script: {data.get('script', '')}")
+            print(f"  exit_code: {data.get('exit_code', '?')}")
+            if data.get("auto_installed"):
+                print(f"  auto_installed: {data.get('auto_installed')}")
+            repairs = data.get("repairs") or []
+            if repairs:
+                print(f"  repairs: {len(repairs)}")
+            for line in _clip_text(data.get("stdout")):
+                print(f"  stdout: {line}")
+            for line in _clip_text(data.get("stderr")):
+                print(f"  stderr: {line}")
+            install = data.get("install") if isinstance(data, dict) else None
+            if isinstance(install, dict):
+                print(f"  install_ok: {install.get('ok')}")
+                for line in _clip_text(install.get("stderr") or install.get("stdout"), max_lines=3, max_chars=300):
+                    print(f"  install_log: {line}")
+        elif not ok:
+            print(f"  error: {result.get('error', 'unknown error')}")
 
 
 def _run_turn_cli(agent: AgentExecutor, text: str, session_id: str | None, label: str) -> dict | None:
@@ -161,6 +219,23 @@ def _run_turn_cli(agent: AgentExecutor, text: str, session_id: str | None, label
         print(f"\nrequest failed: {e}")
         print("tip: run `/health` to inspect current model config.")
         return None
+
+
+def _setup_line_editing() -> None:
+    if readline is None:
+        return
+    try:
+        readline.parse_and_bind("set editing-mode emacs")
+        readline.parse_and_bind("tab: complete")
+        readline.parse_and_bind(r'"\e[A": history-search-backward')
+        readline.parse_and_bind(r'"\e[B": history-search-forward')
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _clear_empty_input_line() -> None:
+    # Remove the empty line produced by pressing Enter. The next input() call redraws the prompt.
+    print("\033[A\033[2K\r", end="", flush=True)
 
 
 def main() -> None:
@@ -213,12 +288,14 @@ def main() -> None:
     if not active_session:
         active_session = agent.create_session("interactive")
 
+    _setup_line_editing()
     _print_startup_warning(agent)
     print(f"SkillIt interactive mode. session={active_session}. type /exit to quit")
     print("commands: /new [title], /use <session_id>, /sessions, /health, /health --probe")
+    prompt = "Aceberg> "
     while True:
         try:
-            text = input("Aceberg> ").strip()
+            text = input(prompt).strip()
         except KeyboardInterrupt:
             print("\nexiting on Ctrl+C")
             break
@@ -226,8 +303,9 @@ def main() -> None:
             print()
             break
         if not text:
-            # print("请输入内容，或输入 /exit 退出。")
+            # _clear_empty_input_line()
             continue
+        
         if text in {"/exit", "/quit"}:
             break
         if text.startswith("/new"):
@@ -254,6 +332,7 @@ def main() -> None:
         if out is None:
             continue
         active_session = out["session_id"]
+        _print_tool_trace(out.get("tool_results", []))
         print("bot>", out["reply"])
 
 

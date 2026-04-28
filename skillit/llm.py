@@ -337,6 +337,15 @@ def _render_tool_line(line: str) -> str:
             return f"- 脚本 `{data.get('script', '')}` 报错：{stderr[:220]}"
         return f"- 脚本 `{data.get('script', '')}` 已执行，退出码 {data.get('exit_code', '?')}。"
 
+    if tool == "run_local_script" and isinstance(data, dict):
+        stdout = str(data.get("stdout", "")).strip().replace("\n", " ")
+        stderr = str(data.get("stderr", "")).strip().replace("\n", " ")
+        if stdout:
+            return f"- 本地脚本 `{data.get('script', '')}` 输出：{stdout[:220]}"
+        if stderr:
+            return f"- 本地脚本 `{data.get('script', '')}` 报错：{stderr[:220]}"
+        return f"- 本地脚本 `{data.get('script', '')}` 已执行，退出码 {data.get('exit_code', '?')}。"
+
     return f"- `{tool}` 已执行。"
 
 

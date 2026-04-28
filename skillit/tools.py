@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,8 @@ class ToolRegistry:
     def __init__(self, workspace_root: Path, script_index: dict[str, dict[str, str]] | None = None) -> None:
         self.workspace_root = workspace_root.resolve()
         self.script_index = script_index or {}
+        self.venv_python = self.workspace_root / ".venv" / "bin" / "python"
+        self.venv_pip = self.workspace_root / ".venv" / "bin" / "pip"
 
     def list_tools(self) -> list[dict]:
         return [
@@ -18,6 +21,7 @@ class ToolRegistry:
             {"name": "read_text", "desc": "Read text content from a file."},
             {"name": "search_text", "desc": "Search keyword in files recursively."},
             {"name": "write_text", "desc": "Write or append text to a file."},
+            {"name": "run_local_script", "desc": "Run a local .py/.sh/.js file, preferring .venv for Python."},
             {
                 "name": "run_skill_script",
                 "desc": "Run a local script from skills/<skill>/scripts/ inside a skill pack.",
@@ -85,7 +89,24 @@ class ToolRegistry:
         timeout_sec = int(params.get("timeout_sec", 20))
         payload = params.get("input", {})
         script_path = self._resolve_script_path(params)
+        return self.execute_local_script(script_path, payload=payload, timeout_sec=timeout_sec)
 
+    def execute_local_script(self, script_path: Path, payload: dict | None = None, timeout_sec: int = 20) -> dict:
+        payload = payload or {}
+        first_run = self._run_local_script_once(script_path, payload=payload, timeout_sec=timeout_sec)
+        missing_module = self._extract_missing_module(first_run)
+        if missing_module and self.venv_pip.exists():
+            install = self._install_package(missing_module, timeout_sec=timeout_sec)
+            if install["ok"]:
+                second_run = self._run_local_script_once(script_path, payload=payload, timeout_sec=timeout_sec)
+                second_run["auto_installed"] = missing_module
+                second_run["install"] = install
+                return second_run
+            first_run["install"] = install
+        return first_run
+
+    def _run_local_script_once(self, script_path: Path, payload: dict | None = None, timeout_sec: int = 20) -> dict:
+        payload = payload or {}
         cmd = self._build_cmd(script_path)
         env = dict(os.environ)
         env["SKILLIT_INPUT_JSON"] = json.dumps(payload, ensure_ascii=False)
@@ -97,6 +118,7 @@ class ToolRegistry:
             capture_output=True,
             timeout=timeout_sec,
             env=env,
+            cwd=str(script_path.parent),
         )
 
         stdout = (proc.stdout or "").strip()
@@ -108,6 +130,7 @@ class ToolRegistry:
             "exit_code": proc.returncode,
             "stdout": parsed_stdout,
             "stderr": stderr,
+            "cmd": cmd,
         }
 
     def _resolve_script_path(self, params: dict) -> Path:
@@ -127,16 +150,48 @@ class ToolRegistry:
             raise ValueError(f"script not found: skill={skill} script={script}")
         return self._safe_path(real)
 
-    @staticmethod
-    def _build_cmd(script_path: Path) -> list[str]:
+    def _build_cmd(self, script_path: Path) -> list[str]:
         ext = script_path.suffix.lower()
         if ext == ".py":
-            return [sys.executable, str(script_path)]
+            py = str(self.venv_python if self.venv_python.exists() else Path(sys.executable))
+            return [py, str(script_path)]
         if ext == ".sh":
             return ["/bin/sh", str(script_path)]
         if ext == ".js":
             return ["node", str(script_path)]
         return [str(script_path)]
+
+    def _install_package(self, package: str, timeout_sec: int = 20) -> dict:
+        if not self.venv_pip.exists():
+            return {"ok": False, "error": "missing .venv/bin/pip", "package": package}
+        proc = subprocess.run(
+            [str(self.venv_pip), "install", package],
+            text=True,
+            capture_output=True,
+            timeout=max(timeout_sec, 60),
+            cwd=str(self.workspace_root),
+            env=dict(os.environ),
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "package": package,
+            "exit_code": proc.returncode,
+            "stdout": (proc.stdout or "").strip()[:1200],
+            "stderr": (proc.stderr or "").strip()[:1200],
+        }
+
+    @staticmethod
+    def _extract_missing_module(run_result: dict) -> str | None:
+        stderr = str(run_result.get("stderr", ""))
+        stdout = str(run_result.get("stdout", ""))
+        text = stderr + "\n" + stdout
+        m = re.search(r"No module named ['\"]([^'\"]+)['\"]", text)
+        if not m:
+            return None
+        name = m.group(1).strip()
+        if not name or "." in name:
+            return name.split(".", 1)[0] if name else None
+        return name
 
     @staticmethod
     def _maybe_json(text: str):

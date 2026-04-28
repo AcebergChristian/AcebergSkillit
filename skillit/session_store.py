@@ -96,6 +96,11 @@ class SessionStore:
         rec = self._session_rec(sid)
         self._append_jsonl(Path(rec["tools_file"]), payload)
 
+    def load_recent_tool_results(self, sid: str, n: int = 40) -> list[dict]:
+        rec = self._session_rec(sid)
+        rows = self._read_jsonl(Path(rec["tools_file"]))
+        return rows[-n:]
+
     def _touch(self, sid: str) -> None:
         rec = self._session_rec(sid)
         p = Path(rec["meta_file"])
