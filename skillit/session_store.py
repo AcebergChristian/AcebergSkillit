@@ -101,6 +101,10 @@ class SessionStore:
         rows = self._read_jsonl(Path(rec["tools_file"]))
         return rows[-n:]
 
+    def session_dir(self, sid: str) -> Path:
+        rec = self._session_rec(sid)
+        return Path(rec["meta_file"]).parent
+
     def _touch(self, sid: str) -> None:
         rec = self._session_rec(sid)
         p = Path(rec["meta_file"])

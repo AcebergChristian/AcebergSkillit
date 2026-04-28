@@ -7,6 +7,7 @@ from pathlib import Path
 class RuntimeConfig:
     skills_dir: Path = Path("skills")
     sessions_dir: Path = Path("sessions")
+    output_dir: Path = Path("output")
     soul_file: Path = Path("soul.md")
     short_term_turns: int = 8
     max_context_chars: int = 7000

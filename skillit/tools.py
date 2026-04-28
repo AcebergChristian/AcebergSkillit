@@ -91,21 +91,33 @@ class ToolRegistry:
         script_path = self._resolve_script_path(params)
         return self.execute_local_script(script_path, payload=payload, timeout_sec=timeout_sec)
 
-    def execute_local_script(self, script_path: Path, payload: dict | None = None, timeout_sec: int = 20) -> dict:
+    def execute_local_script(
+        self,
+        script_path: Path,
+        payload: dict | None = None,
+        timeout_sec: int = 20,
+        cwd: Path | None = None,
+    ) -> dict:
         payload = payload or {}
-        first_run = self._run_local_script_once(script_path, payload=payload, timeout_sec=timeout_sec)
+        first_run = self._run_local_script_once(script_path, payload=payload, timeout_sec=timeout_sec, cwd=cwd)
         missing_module = self._extract_missing_module(first_run)
         if missing_module and self.venv_pip.exists():
             install = self._install_package(missing_module, timeout_sec=timeout_sec)
             if install["ok"]:
-                second_run = self._run_local_script_once(script_path, payload=payload, timeout_sec=timeout_sec)
+                second_run = self._run_local_script_once(script_path, payload=payload, timeout_sec=timeout_sec, cwd=cwd)
                 second_run["auto_installed"] = missing_module
                 second_run["install"] = install
                 return second_run
             first_run["install"] = install
         return first_run
 
-    def _run_local_script_once(self, script_path: Path, payload: dict | None = None, timeout_sec: int = 20) -> dict:
+    def _run_local_script_once(
+        self,
+        script_path: Path,
+        payload: dict | None = None,
+        timeout_sec: int = 20,
+        cwd: Path | None = None,
+    ) -> dict:
         payload = payload or {}
         cmd = self._build_cmd(script_path)
         env = dict(os.environ)
@@ -118,7 +130,7 @@ class ToolRegistry:
             capture_output=True,
             timeout=timeout_sec,
             env=env,
-            cwd=str(script_path.parent),
+            cwd=str(cwd or self.workspace_root),
         )
 
         stdout = (proc.stdout or "").strip()

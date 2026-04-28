@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from .schema import Plan, PlanStep, Turn
+from .schema import Plan, PlanStep, Turn, WorkflowPlan, WorkflowTask
 
 
 class Planner:
@@ -41,6 +41,90 @@ class Planner:
             )
         )
         return Plan(goal=text, steps=steps)
+
+    def build_workflow(self, user_input: str, history: list[Turn]) -> WorkflowPlan:
+        text = user_input.strip()
+        low = text.lower()
+        tasks: list[WorkflowTask] = [
+            WorkflowTask(
+                id="w1",
+                kind="understand",
+                description="Clarify requirement, constraints, and expected delivery artifact.",
+                output_hint="normalized goal, constraints, and artifact expectations",
+                status="ready",
+            )
+        ]
+
+        if self._needs_research(low, text):
+            tasks.append(
+                WorkflowTask(
+                    id="w2",
+                    kind="research",
+                    description="Research the requested external information source and collect raw findings.",
+                    skill_id="research",
+                    input_hint="query/topic + freshness requirement",
+                    output_hint="structured raw findings",
+                    depends_on=["w1"],
+                    status="ready",
+                )
+            )
+
+        if self._needs_codegen(text):
+            tasks.append(
+                WorkflowTask(
+                    id=f"w{len(tasks) + 1}",
+                    kind="codegen",
+                    description="Generate a runnable implementation artifact for the requirement.",
+                    skill_id="coding",
+                    input_hint="workflow context + target output path/format",
+                    output_hint="runnable script or program artifact",
+                    depends_on=[tasks[-1].id],
+                    status="ready",
+                )
+            )
+
+        if self._needs_export(low, text):
+            tasks.append(
+                WorkflowTask(
+                    id=f"w{len(tasks) + 1}",
+                    kind="export",
+                    description="Persist structured results into the requested delivery format.",
+                    skill_id="data_export",
+                    input_hint="structured rows/items + target format",
+                    output_hint="xlsx/csv/json artifact",
+                    depends_on=[tasks[-1].id],
+                    status="ready",
+                )
+            )
+
+        if self._needs_execution(low, text):
+            tasks.append(
+                WorkflowTask(
+                    id=f"w{len(tasks) + 1}",
+                    kind="execute",
+                    description="Execute the generated artifact, validate output, and repair on failure.",
+                    skill_id="coding",
+                    input_hint="generated artifact + runtime environment",
+                    output_hint="execution logs + success artifact preview",
+                    depends_on=[tasks[-1].id],
+                    status="ready",
+                )
+            )
+
+        tasks.append(
+            WorkflowTask(
+                id=f"w{len(tasks) + 1}",
+                kind="respond",
+                description="Summarize what was produced, executed, and where artifacts were stored.",
+                skill_id="default",
+                output_hint="concise execution summary",
+                depends_on=[tasks[-1].id],
+                status="ready",
+            )
+        )
+
+        primary_skill_id = self._pick_primary_skill_id(low, text, tasks)
+        return WorkflowPlan(goal=text, tasks=tasks, primary_skill_id=primary_skill_id)
 
     def _infer_tool_steps(self, text: str) -> list[PlanStep]:
         ordered_ops = self._infer_ops_order(text)
@@ -210,3 +294,35 @@ class Planner:
             token in low for token in ["python", ".py", "javascript", ".js", "bash", ".sh"]
         )
         return has_create and has_code
+
+    @staticmethod
+    def _needs_research(low: str, text: str) -> bool:
+        return any(token in text for token in ["新闻", "百度", "搜索", "查一下", "查查"]) or any(
+            token in low for token in ["news", "search", "research", "crawl", "scrape"]
+        )
+
+    def _needs_codegen(self, text: str) -> bool:
+        return self._is_code_generation_request(text) or self._needs_research(text.lower(), text)
+
+    @staticmethod
+    def _needs_export(low: str, text: str) -> bool:
+        return any(token in text for token in ["excel", "xlsx", "csv", "表格", "导出", "存到"])
+
+    @staticmethod
+    def _needs_execution(low: str, text: str) -> bool:
+        return any(token in text for token in ["执行", "运行", "跑一下"]) or any(
+            token in low for token in ["execute", "run"]
+        ) or Planner._needs_research(low, text)
+
+    @staticmethod
+    def _pick_primary_skill_id(low: str, text: str, tasks: list[WorkflowTask]) -> str:
+        kinds = {task.kind for task in tasks}
+        if "research" in kinds:
+            return "research"
+        if "export" in kinds:
+            return "data_export"
+        if Planner._is_code_generation_request(text):
+            return "coding"
+        if any(token in text for token in ["文件", "目录", "读取", "写入"]):
+            return "file_ops"
+        return "default"

@@ -1,36 +1,95 @@
+from __future__ import annotations
+
 from skillit.executor import AgentExecutor
+
+
+def print_event(event: dict) -> None:
+    et = event.get("type")
+    if et == "session":
+        print(f"[session] {event.get('message')}")
+    elif et == "task_dir":
+        print(f"[task_dir] {event.get('task_dir')}")
+    elif et == "workflow":
+        workflow = event.get("workflow", {})
+        print(f"[workflow] primary={workflow.get('primary_skill_id')} goal={workflow.get('goal')}")
+        for task in workflow.get("tasks", []):
+            print(f"  - {task.get('id')} [{task.get('kind')}] skill={task.get('skill_id') or '-'}")
+    elif et == "skill":
+        print(f"[skill] {event.get('message')}")
+    elif et == "plan":
+        print("[plan]")
+        for step in event.get("plan", {}).get("steps", []):
+            if step.get("kind") == "tool":
+                print(f"  - {step.get('id')} tool={step.get('tool')} input={step.get('tool_input')}")
+            else:
+                print(f"  - {step.get('id')} {step.get('kind')} {step.get('description')}")
+    elif et == "tool":
+        msg = f"[tool] {event.get('step_id')} {event.get('tool')} ok={event.get('ok')}"
+        if event.get("path"):
+            msg += f" path={event.get('path')}"
+        if event.get("script"):
+            msg += f" script={event.get('script')}"
+        if event.get("exit_code") is not None:
+            msg += f" exit_code={event.get('exit_code')}"
+        print(msg)
+    elif et == "run":
+        print(f"[run] path={event.get('path')} exit_code={event.get('exit_code')}")
+    elif et == "repair":
+        print(f"[repair] attempt={event.get('attempt')} exit_code={event.get('exit_code')} script={event.get('script')}")
+    elif et == "promotion_candidate":
+        cand = event.get("candidate", {})
+        print(f"[promotion] pending skill_id={cand.get('suggested_skill_id')} script={cand.get('script_path')}")
+
+
+def print_result(out: dict) -> None:
+    print("session:", out["session_id"])
+    print("skill:", out["skill"])
+    print("task_output_dir:", out.get("task_output_dir", ""))
+
+    workflow = out.get("workflow") or {}
+    if workflow:
+        print("\nworkflow:")
+        print("goal:", workflow.get("goal", ""))
+        print("primary_skill:", workflow.get("primary_skill_id", ""))
+        for task in workflow.get("tasks", []):
+            dep = f" depends_on={task.get('depends_on', [])}" if task.get("depends_on") else ""
+            skill = f" skill={task.get('skill_id')}" if task.get("skill_id") else ""
+            print(f"- {task.get('id')} [{task.get('kind')}]{skill}{dep} -> {task.get('description')}")
+
+    print("\nplan:")
+    for step in out["plan"]["steps"]:
+        if step["kind"] == "tool":
+            dep = f" depends_on={step.get('depends_on', [])}" if step.get("depends_on") else ""
+            print(f"- {step['id']} [tool] {step.get('tool', '')}{dep} input={step.get('tool_input', {})}")
+        else:
+            print(f"- {step['id']} [{step['kind']}] {step['description']}")
+
+    if out.get("tool_results"):
+        print("\ntrace:")
+        for item in out["tool_results"]:
+            result = item.get("result", {}) or {}
+            print(f"- {item.get('step_id')} {item.get('tool')} ok={result.get('ok')}")
+            data = result.get("data", {}) if isinstance(result, dict) else {}
+            if isinstance(data, dict):
+                if data.get("path"):
+                    print("  path:", data["path"])
+                if data.get("script"):
+                    print("  script:", data["script"])
+                if data.get("exit_code") is not None:
+                    print("  exit_code:", data["exit_code"])
+
+    print("\nreply:")
+    print(out["reply"])
+    if out.get("promotion_candidate"):
+        print("\npromotion_candidate:")
+        print(out["promotion_candidate"])
 
 
 def main() -> None:
     agent = AgentExecutor()
-
-    # Create or reuse a session id as needed.
-    session_id = agent.create_session("app-demo")
-    print("session:", session_id)
-
-    queries = [
-        '先搜索 "planner" 再读取内容',
-        "帮我查一下文件夹的 ls",
-        "帮我列举出有关的py文件"
-    ]
-
-    for i, q in enumerate(queries, start=1):
-        out = agent.run_turn(q, session_id=session_id)
-        print(f"\n--- turn {i} ---")
-        print("skill:", out["skill"])
-        print("plan steps:")
-        for step in out["plan"]["steps"]:
-            if step["kind"] == "tool":
-                print(
-                    f"- {step['id']} [tool] {step.get('tool','')} "
-                    f"depends_on={step.get('depends_on', [])} "
-                    f"input={step.get('tool_input', {})}"
-                )
-            else:
-                print(f"- {step['id']} [{step['kind']}] {step['description']}")
-
-        print("tool results:", len(out["tool_results"]))
-        print("reply:", out["reply"])
+    requirement = "帮我新浪查一下今天新闻，存到excel里，然后执行，结果放到excel"
+    out = agent.run_requirement(requirement, title="import-runtime-demo", event_callback=print_event)
+    print_result(out)
 
 
 if __name__ == "__main__":
