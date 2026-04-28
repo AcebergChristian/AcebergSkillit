@@ -223,8 +223,14 @@ class AgentExecutor:
         session_id: str | None = None,
         title: str = "requirement",
         event_callback: Callable[[dict], None] | None = None,
+        reuse_session_by_title: bool = True,
     ) -> dict:
-        sid = session_id or self.create_session(title)
+        if session_id:
+            sid = session_id
+        elif reuse_session_by_title:
+            sid = self.sessions.get_or_create_by_title(title)
+        else:
+            sid = self.create_session(title)
         return self.run_turn(requirement, session_id=sid, event_callback=event_callback)
 
     def _handle_direct_execute_request(

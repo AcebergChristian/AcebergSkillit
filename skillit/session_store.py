@@ -41,6 +41,22 @@ class SessionStore:
         self._save_manifest(man)
         return sid
 
+    def get_or_create_by_title(self, title: str) -> str:
+        man = self._load_manifest()
+        sessions = man.get("sessions", {})
+        matched: list[tuple[str, str]] = []
+        for sid, rec in sessions.items():
+            meta = self._read_json(Path(rec["meta_file"]))
+            if meta.get("title") == title:
+                matched.append((sid, meta.get("updated_at", "")))
+        if matched:
+            matched.sort(key=lambda x: x[1], reverse=True)
+            sid = matched[0][0]
+            man["active_session"] = sid
+            self._save_manifest(man)
+            return sid
+        return self.create(title=title)
+
     def ensure(self, sid: str | None = None) -> str:
         man = self._load_manifest()
         if sid and sid in man["sessions"]:

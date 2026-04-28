@@ -87,8 +87,17 @@ def print_result(out: dict) -> None:
 
 def main() -> None:
     agent = AgentExecutor()
-    requirement = "帮我新浪查一下今天新闻，存到excel里，然后执行，结果放到excel"
-    out = agent.run_requirement(requirement, title="import-runtime-demo", event_callback=print_event)
+    session_title = "import-runtime-demo"
+    # requirement = "帮我分析一下这个网站 https://wellfound.com/startups/location/silicon-valley 需要具体数据清单**（如：列出前 20 家公司的名称、融资轮次、职位数），请授权我使用网络抓取工具执行"
+    # requirement = "同意，我将立即生成并执行抓取脚本，写入当前工作目录，并在完成后生成html的报告结果"
+    # requirement = "不用selenium呢，就用requests可以么"
+    requirement = "没看到  CSV 和 HTML"
+    out = agent.run_requirement(
+        requirement,
+        title=session_title,
+        event_callback=print_event,
+        reuse_session_by_title=True,
+    )
     print_result(out)
 
 
