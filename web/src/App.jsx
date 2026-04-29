@@ -6,14 +6,27 @@ import SessionsPage from './pages/SessionsPage'
 import SkillsPage from './pages/SkillsPage'
 import { getRuntime } from './lib/api'
 
+const THEME_STORAGE_KEY = 'skillit-theme'
+
+function getInitialDarkMode() {
+  if (typeof window === 'undefined') return true
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
+  if (stored === 'dark') return true
+  if (stored === 'light') return false
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true
+}
+
 export default function App() {
   const [activePage, setActivePage] = useState('dash')
-  const [darkMode, setDarkMode] = useState(true)
+  const [darkMode, setDarkMode] = useState(getInitialDarkMode)
   const [runtime, setRuntime] = useState(null)
 
   useEffect(() => {
     document.body.classList.toggle('light', !darkMode)
     document.documentElement.classList.toggle('dark', darkMode)
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(THEME_STORAGE_KEY, darkMode ? 'dark' : 'light')
+    }
   }, [darkMode])
 
   useEffect(() => {
