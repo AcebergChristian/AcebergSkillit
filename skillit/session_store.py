@@ -29,10 +29,11 @@ class SessionStore:
             "memories_file": str(base / "memories.jsonl"),
             "plans_file": str(base / "plans.jsonl"),
             "tools_file": str(base / "tools.jsonl"),
+            "events_file": str(base / "events.jsonl"),
         }
         meta = {"id": sid, "title": title, "created_at": utc_now(), "updated_at": utc_now()}
         Path(files["meta_file"]).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        for k in ["turns_file", "memories_file", "plans_file", "tools_file"]:
+        for k in ["turns_file", "memories_file", "plans_file", "tools_file", "events_file"]:
             Path(files[k]).write_text("", encoding="utf-8")
 
         man = self._load_manifest()
@@ -84,6 +85,10 @@ class SessionStore:
             )
         return sorted(out, key=lambda x: x.get("updated_at", ""), reverse=True)
 
+    def get_meta(self, sid: str) -> dict:
+        rec = self._session_rec(sid)
+        return self._read_json(Path(rec["meta_file"]))
+
     def append_turn(self, sid: str, turn: Turn) -> None:
         rec = self._session_rec(sid)
         self._append_jsonl(Path(rec["turns_file"]), turn.to_json())
@@ -108,6 +113,11 @@ class SessionStore:
         rec = self._session_rec(sid)
         self._append_jsonl(Path(rec["plans_file"]), plan.to_json())
 
+    def load_recent_plans(self, sid: str, n: int = 20) -> list[dict]:
+        rec = self._session_rec(sid)
+        rows = self._read_jsonl(Path(rec["plans_file"]))
+        return rows[-n:]
+
     def append_tool_result(self, sid: str, payload: dict) -> None:
         rec = self._session_rec(sid)
         self._append_jsonl(Path(rec["tools_file"]), payload)
@@ -115,6 +125,17 @@ class SessionStore:
     def load_recent_tool_results(self, sid: str, n: int = 40) -> list[dict]:
         rec = self._session_rec(sid)
         rows = self._read_jsonl(Path(rec["tools_file"]))
+        return rows[-n:]
+
+    def append_event(self, sid: str, payload: dict) -> None:
+        rec = self._session_rec(sid)
+        events_file = Path(rec.get("events_file") or self.session_dir(sid) / "events.jsonl")
+        self._append_jsonl(events_file, payload)
+
+    def load_recent_events(self, sid: str, n: int = 200) -> list[dict]:
+        rec = self._session_rec(sid)
+        events_file = Path(rec.get("events_file") or self.session_dir(sid) / "events.jsonl")
+        rows = self._read_jsonl(events_file)
         return rows[-n:]
 
     def session_dir(self, sid: str) -> Path:

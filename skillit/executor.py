@@ -77,20 +77,49 @@ class AgentExecutor:
     def list_sessions(self) -> list[dict]:
         return self.sessions.list_sessions()
 
+    def get_session_snapshot(self, sid: str, *, limit: int = 200) -> dict:
+        meta = self.sessions.get_meta(sid)
+        turns = [turn.to_json() for turn in self.sessions.load_recent_turns(sid, n=limit)]
+        plans = self.sessions.load_recent_plans(sid, n=limit)
+        tool_results = self.sessions.load_recent_tool_results(sid, n=limit)
+        events = self.sessions.load_recent_events(sid, n=limit)
+        workflow = None
+        for event in reversed(events):
+            if event.get("type") == "workflow" and event.get("workflow"):
+                workflow = event.get("workflow")
+                break
+        task_dir = self._latest_task_output_dir(sid)
+        return {
+            "session": {
+                "id": meta.get("id", sid),
+                "title": meta.get("title", "session"),
+                "created_at": meta.get("created_at", ""),
+                "updated_at": meta.get("updated_at", ""),
+            },
+            "workflow": workflow,
+            "plans": plans,
+            "events": events,
+            "tool_results": tool_results,
+            "turns": turns,
+            "task_output_dir": str(task_dir) if task_dir else "",
+            "outputs": self._list_output_files(task_dir),
+            "promotion_candidate": self.load_promotion_candidate(sid),
+        }
+
     # 运行一次对话
     def run_turn(self, user_input: str, session_id: str | None = None, event_callback: Callable[[dict], None] | None = None) -> dict:
         sid = self.sessions.ensure(session_id)
         task_dir = self.create_task_output_dir(sid)
-        self._emit(event_callback, {"type": "session", "session_id": sid, "message": f"start session={sid}"})
-        self._emit(event_callback, {"type": "task_dir", "session_id": sid, "task_dir": str(task_dir)})
+        self._emit(sid, event_callback, {"type": "session", "session_id": sid, "message": f"start session={sid}"})
+        self._emit(sid, event_callback, {"type": "task_dir", "session_id": sid, "task_dir": str(task_dir)})
         recent_turns = self.sessions.load_recent_turns(sid, n=self.cfg.short_term_turns)
         recent_tools = self.sessions.load_recent_tool_results(sid, n=40)
         memories = self.sessions.load_memories(sid, max_items=self.cfg.max_memory_items)
         mem_summary = compact_memories(memories)
         workflow = self.planner.build_workflow(user_input=user_input, history=recent_turns)
         skill = self._select_primary_skill(user_input, workflow)
-        self._emit(event_callback, {"type": "workflow", "session_id": sid, "workflow": workflow.to_json()})
-        self._emit(event_callback, {"type": "skill", "session_id": sid, "skill_id": skill.id, "message": f"primary skill={skill.id}"})
+        self._emit(sid, event_callback, {"type": "workflow", "session_id": sid, "workflow": workflow.to_json()})
+        self._emit(sid, event_callback, {"type": "skill", "session_id": sid, "skill_id": skill.id, "message": f"primary skill={skill.id}"})
 
         direct_exec = self._handle_direct_execute_request(
             sid=sid,
@@ -105,7 +134,7 @@ class AgentExecutor:
 
         plan = self.planner.build_plan(user_input=user_input, history=recent_turns)
         self.sessions.append_plan(sid, plan)
-        self._emit(event_callback, {"type": "plan", "session_id": sid, "plan": plan.to_json()})
+        self._emit(sid, event_callback, {"type": "plan", "session_id": sid, "plan": plan.to_json()})
 
         tool_results = []
         step_result_map: dict[str, dict] = {}
@@ -134,7 +163,7 @@ class AgentExecutor:
             step_result_map[step.id] = payload
             # 存储工具结果到会话
             self.sessions.append_tool_result(sid, payload)
-            self._emit(event_callback, self._event_from_tool_payload(payload))
+            self._emit(sid, event_callback, self._event_from_tool_payload(payload))
         
         tool_summary = self._render_tool_summary(tool_results)
         plan_summary = self._render_plan(plan)
@@ -178,13 +207,17 @@ class AgentExecutor:
             }
             tool_results.append(write_payload)
             self.sessions.append_tool_result(sid, write_payload)
-            self._emit(event_callback, self._event_from_tool_payload(write_payload))
+            self._emit(sid, event_callback, self._event_from_tool_payload(write_payload))
 
-            run_payload = self._maybe_autorun_generated_file(auto_save, step_id=f"s{len(plan.steps) + 2}", event_callback=event_callback)
+            run_payload = self._maybe_autorun_generated_file(
+                auto_save,
+                step_id=f"s{len(plan.steps) + 2}",
+                event_callback=event_callback,
+            )
             if run_payload is not None:
                 tool_results.append(run_payload)
                 self.sessions.append_tool_result(sid, run_payload)
-                self._emit(event_callback, self._event_from_tool_payload(run_payload))
+                self._emit(sid, event_callback, self._event_from_tool_payload(run_payload))
 
             reply = self._append_autosave_note(reply, write_payload, run_payload)
 
@@ -196,7 +229,7 @@ class AgentExecutor:
         )
         if promotion_candidate is not None:
             self._save_promotion_candidate(sid, promotion_candidate)
-            self._emit(event_callback, {"type": "promotion_candidate", "session_id": sid, "candidate": promotion_candidate})
+            self._emit(sid, event_callback, {"type": "promotion_candidate", "session_id": sid, "candidate": promotion_candidate})
 
         self.sessions.append_turn(sid, Turn(role="user", content=user_input))
         self.sessions.append_turn(sid, Turn(role="assistant", content=reply))
@@ -253,9 +286,10 @@ class AgentExecutor:
             timeout_sec=30,
             cwd=self._run_cwd_for_script(Path(target_path)),
         )
-        self._emit(event_callback, {"type": "run", "session_id": sid, "path": target_path, "exit_code": run_result.get("exit_code"), "stdout": run_result.get("stdout", ""), "stderr": run_result.get("stderr", "")})
+        self._emit(sid, event_callback, {"type": "run", "session_id": sid, "path": target_path, "exit_code": run_result.get("exit_code"), "stdout": run_result.get("stdout", ""), "stderr": run_result.get("stderr", "")})
         if run_result.get("exit_code") not in {0, None}:
             run_result = self._repair_and_rerun_generated_file(
+                sid=sid,
                 user_input=user_input,
                 script_path=Path(target_path),
                 run_result=run_result,
@@ -388,6 +422,7 @@ class AgentExecutor:
             "result": result,
             "code_lang": code_lang,
             "user_input": user_input,
+            "session_id": sid,
         }
 
     def _maybe_autorun_generated_file(self, auto_save: dict, step_id: str, event_callback: Callable[[dict], None] | None = None) -> dict | None:
@@ -407,9 +442,10 @@ class AgentExecutor:
             timeout_sec=30,
             cwd=self._run_cwd_for_script(Path(target_path)),
         )
-        self._emit(event_callback, {"type": "run", "path": target_path, "exit_code": run_result.get("exit_code"), "stdout": run_result.get("stdout", ""), "stderr": run_result.get("stderr", "")})
+        self._emit(auto_save.get("session_id", ""), event_callback, {"type": "run", "path": target_path, "exit_code": run_result.get("exit_code"), "stdout": run_result.get("stdout", ""), "stderr": run_result.get("stderr", "")})
         if run_result.get("exit_code") not in {0, None}:
             run_result = self._repair_and_rerun_generated_file(
+                sid=str(auto_save.get("session_id", "")),
                 user_input=auto_save.get("user_input", ""),
                 script_path=Path(target_path),
                 run_result=run_result,
@@ -704,6 +740,7 @@ class AgentExecutor:
     def _repair_and_rerun_generated_file(
         self,
         *,
+        sid: str,
         user_input: str,
         script_path: Path,
         run_result: dict,
@@ -743,6 +780,7 @@ class AgentExecutor:
                 cwd=self._run_cwd_for_script(script_path),
             )
             self._emit(
+                sid,
                 event_callback,
                 {
                     "type": "repair",
@@ -765,11 +803,13 @@ class AgentExecutor:
         current["repairs"] = repairs
         return current
 
-    @staticmethod
-    def _emit(event_callback: Callable[[dict], None] | None, event: dict) -> None:
-        if event_callback is None:
-            return
-        event_callback(event)
+    def _emit(self, sid: str, event_callback: Callable[[dict], None] | None, event: dict) -> None:
+        payload = {"ts": utc_now(), **event}
+        if sid:
+            payload.setdefault("session_id", sid)
+            self.sessions.append_event(sid, payload)
+        if event_callback is not None:
+            event_callback(payload)
 
     @staticmethod
     def _event_from_tool_payload(payload: dict) -> dict:
@@ -777,6 +817,7 @@ class AgentExecutor:
         data = result.get("data", {}) if isinstance(result, dict) else {}
         return {
             "type": "tool",
+            "ts": payload.get("ts"),
             "step_id": payload.get("step_id"),
             "tool": payload.get("tool"),
             "ok": result.get("ok"),
@@ -784,6 +825,34 @@ class AgentExecutor:
             "script": data.get("script") if isinstance(data, dict) else "",
             "exit_code": data.get("exit_code") if isinstance(data, dict) else None,
         }
+
+    def _latest_task_output_dir(self, sid: str) -> Path | None:
+        root = self.session_output_dir(sid)
+        dirs = [item for item in root.iterdir() if item.is_dir()]
+        if not dirs:
+            return None
+        dirs.sort(key=lambda p: p.name, reverse=True)
+        return dirs[0]
+
+    @staticmethod
+    def _list_output_files(task_dir: Path | None) -> list[dict]:
+        if task_dir is None or not task_dir.exists():
+            return []
+        out = []
+        for path in sorted(task_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            out.append(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "relative_path": str(path.relative_to(task_dir)),
+                    "size": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                }
+            )
+        return out
 
     @staticmethod
     def _build_repair_prompt(*, user_input: str, script_path: Path, source: str, run_result: dict) -> str:

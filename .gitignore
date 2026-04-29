@@ -7,3 +7,8 @@ __pycache__/
 .env.*
 sessions/
 !sessions/.gitkeep
+
+# web
+/web/node_modules/
+/web/dist/
+/web/build/
