@@ -89,6 +89,7 @@ class AgentExecutor:
                 workflow = event.get("workflow")
                 break
         task_dir = self._latest_task_output_dir(sid)
+        output_root = self.session_output_dir(sid)
         return {
             "session": {
                 "id": meta.get("id", sid),
@@ -102,7 +103,7 @@ class AgentExecutor:
             "tool_results": tool_results,
             "turns": turns,
             "task_output_dir": str(task_dir) if task_dir else "",
-            "outputs": self._list_output_files(task_dir),
+            "outputs": self._list_output_files(output_root, base_dir=output_root),
             "promotion_candidate": self.load_promotion_candidate(sid),
         }
 
@@ -120,6 +121,9 @@ class AgentExecutor:
         skill = self._select_primary_skill(user_input, workflow)
         self._emit(sid, event_callback, {"type": "workflow", "session_id": sid, "workflow": workflow.to_json()})
         self._emit(sid, event_callback, {"type": "skill", "session_id": sid, "skill_id": skill.id, "message": f"primary skill={skill.id}"})
+        user_turn = Turn(role="user", content=user_input)
+        self.sessions.append_turn(sid, user_turn)
+        self._emit(sid, event_callback, {"type": "turn", "session_id": sid, "turn": user_turn.to_json()})
 
         direct_exec = self._handle_direct_execute_request(
             sid=sid,
@@ -128,8 +132,9 @@ class AgentExecutor:
             event_callback=event_callback,
         )
         if direct_exec is not None:
-            self.sessions.append_turn(sid, Turn(role="user", content=user_input))
-            self.sessions.append_turn(sid, Turn(role="assistant", content=direct_exec["reply"]))
+            assistant_turn = Turn(role="assistant", content=direct_exec["reply"])
+            self.sessions.append_turn(sid, assistant_turn)
+            self._emit(sid, event_callback, {"type": "final_reply", "session_id": sid, "reply": assistant_turn.content, "turn": assistant_turn.to_json()})
             return direct_exec
 
         plan = self.planner.build_plan(user_input=user_input, history=recent_turns)
@@ -187,6 +192,7 @@ class AgentExecutor:
             tool_summary=tool_summary,
             max_chars=self.cfg.max_context_chars,
         )
+        self._emit(sid, event_callback, {"type": "reply_start", "session_id": sid, "message": "generating reply"})
         reply = self.llm.generate(context).text
         auto_save = self._maybe_autosave_generated_file(
             sid=sid,
@@ -231,8 +237,9 @@ class AgentExecutor:
             self._save_promotion_candidate(sid, promotion_candidate)
             self._emit(sid, event_callback, {"type": "promotion_candidate", "session_id": sid, "candidate": promotion_candidate})
 
-        self.sessions.append_turn(sid, Turn(role="user", content=user_input))
-        self.sessions.append_turn(sid, Turn(role="assistant", content=reply))
+        assistant_turn = Turn(role="assistant", content=reply)
+        self._emit(sid, event_callback, {"type": "final_reply", "session_id": sid, "reply": reply, "turn": assistant_turn.to_json()})
+        self.sessions.append_turn(sid, assistant_turn)
 
         for item in self.extractor.extract(user_input):
             self.sessions.append_memory(sid, item)
@@ -835,9 +842,10 @@ class AgentExecutor:
         return dirs[0]
 
     @staticmethod
-    def _list_output_files(task_dir: Path | None) -> list[dict]:
+    def _list_output_files(task_dir: Path | None, *, base_dir: Path | None = None) -> list[dict]:
         if task_dir is None or not task_dir.exists():
             return []
+        base = base_dir or task_dir
         out = []
         for path in sorted(task_dir.rglob("*")):
             if not path.is_file():
@@ -847,11 +855,12 @@ class AgentExecutor:
                 {
                     "name": path.name,
                     "path": str(path),
-                    "relative_path": str(path.relative_to(task_dir)),
+                    "relative_path": str(path.relative_to(base)),
                     "size": stat.st_size,
                     "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                 }
             )
+        out.sort(key=lambda item: item.get("modified_at", ""), reverse=True)
         return out
 
     @staticmethod

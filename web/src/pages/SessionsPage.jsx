@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { chatStream, getSession, getSessions } from '../lib/api'
 
 function formatEvent(event) {
@@ -21,6 +21,23 @@ function formatBytes(size) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function formatTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
+function buildTurnKey(turn, index = 0) {
+  return `${turn.ts || 'no-ts'}-${turn.role || 'unknown'}-${turn.content || ''}-${index}`
+}
+
+function mergeTurns(baseTurns, extraTurn) {
+  const tail = baseTurns.slice(-2)
+  const duplicate = tail.some((item) => item.role === extraTurn.role && item.content === extraTurn.content)
+  return duplicate ? baseTurns : [...baseTurns, extraTurn]
+}
+
 function DrawerToggle({ open, onClick }) {
   return (
     <button
@@ -35,15 +52,40 @@ function DrawerToggle({ open, onClick }) {
   )
 }
 
+function SectionToggle({ open, count, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="max-w-[92px] shrink-0 truncate rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] text-white/55 transition hover:bg-white/[0.1] light:bg-black/6 light:text-zinc-500"
+      title={open ? `Hide ${count ?? ''}`.trim() : `Show ${count ?? ''}`.trim()}
+    >
+      {open ? `Hide ${count ?? ''}`.trim() : `Show ${count ?? ''}`.trim()}
+    </button>
+  )
+}
+
 export default function SessionsPage({ runtime }) {
   const [sessions, setSessions] = useState([])
   const [selectedId, setSelectedId] = useState('')
   const [snapshot, setSnapshot] = useState(null)
   const [liveEvents, setLiveEvents] = useState([])
+  const [streamTurns, setStreamTurns] = useState([])
+  const [assistantDraft, setAssistantDraft] = useState(null)
+  const [pendingSnapshot, setPendingSnapshot] = useState(null)
   const [requirement, setRequirement] = useState('')
   const [running, setRunning] = useState(false)
   const [error, setError] = useState('')
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [eventsOpen, setEventsOpen] = useState(false)
+  const [overviewOpen, setOverviewOpen] = useState(true)
+  const [outputsOpen, setOutputsOpen] = useState(true)
+  const [activityOpen, setActivityOpen] = useState(true)
+  const [chatScrolling, setChatScrolling] = useState(false)
+  const chatScrollRef = useRef(null)
+  const shouldAutoScrollRef = useRef(true)
+  const typingTimerRef = useRef(null)
+  const scrollStateTimerRef = useRef(null)
 
   async function loadSessions(preferredId = '') {
     const data = await getSessions()
@@ -89,29 +131,99 @@ export default function SessionsPage({ runtime }) {
     }
   }, [selectedId])
 
+  useEffect(() => {
+    return () => {
+      if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
+      if (scrollStateTimerRef.current) window.clearTimeout(scrollStateTimerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!pendingSnapshot) return
+    if (assistantDraft && assistantDraft.status !== 'done') return
+    setSnapshot(pendingSnapshot)
+    setPendingSnapshot(null)
+    setStreamTurns([])
+    setAssistantDraft(null)
+    setLiveEvents([])
+  }, [assistantDraft, pendingSnapshot])
+
+  const effectiveSnapshot = pendingSnapshot || snapshot
+
   const processEvents = useMemo(() => {
     if (liveEvents.length > 0) return liveEvents
-    return snapshot?.events || []
-  }, [liveEvents, snapshot])
+    return effectiveSnapshot?.events || []
+  }, [effectiveSnapshot, liveEvents])
 
-  const turns = snapshot?.turns || []
-  const toolRows = snapshot?.tool_results || []
-  const outputFiles = snapshot?.outputs || []
-  const workflowTasks = snapshot?.workflow?.tasks || []
+  const turns = useMemo(() => {
+    let items = snapshot?.turns || []
+    for (const turn of streamTurns) items = mergeTurns(items, turn)
+    if (assistantDraft) {
+      items = [
+        ...items,
+        {
+          role: 'assistant',
+          content: assistantDraft.content,
+          ts: assistantDraft.ts,
+          loading: assistantDraft.status === 'loading' || assistantDraft.status === 'streaming',
+        },
+      ]
+    }
+    return items
+  }, [assistantDraft, snapshot, streamTurns])
+  const toolRows = effectiveSnapshot?.tool_results || []
+  const outputFiles = effectiveSnapshot?.outputs || []
+  const workflowTasks = effectiveSnapshot?.workflow?.tasks || []
+  const recentTools = toolRows.slice(-5).reverse()
+  const sessionMeta = effectiveSnapshot?.session || snapshot?.session || {}
+  const latestEvent = processEvents[processEvents.length - 1]
+
+  function revealReply(content, ts) {
+    if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
+    const fullText = content || ''
+    if (!fullText) {
+      setAssistantDraft({ content: '', ts, status: 'done' })
+      return
+    }
+
+    let cursor = 0
+    const chunkSize = Math.max(6, Math.ceil(fullText.length / 90))
+
+    const step = () => {
+      cursor = Math.min(fullText.length, cursor + chunkSize)
+      setAssistantDraft({
+        content: fullText.slice(0, cursor),
+        ts,
+        status: cursor >= fullText.length ? 'done' : 'streaming',
+      })
+      if (cursor < fullText.length) {
+        typingTimerRef.current = window.setTimeout(step, 16)
+      }
+    }
+
+    setAssistantDraft({ content: '', ts, status: 'streaming' })
+    step()
+  }
 
   async function handleRun(event) {
     event.preventDefault()
-    if (!requirement.trim() || running) return
+    const trimmed = requirement.trim()
+    if (!trimmed || running) return
+    const localTs = new Date().toISOString()
     setRunning(true)
     setError('')
     setLiveEvents([])
+    setRequirement('')
+    setPendingSnapshot(null)
+    setStreamTurns([{ role: 'user', content: trimmed, ts: localTs }])
+    setAssistantDraft({ content: '', ts: localTs, status: 'loading' })
 
     const title = snapshot?.session?.title || sessions.find((item) => item.id === selectedId)?.title || 'web-console'
 
     try {
       await chatStream(
         {
-          requirement: requirement.trim(),
+          requirement: trimmed,
           title,
           session_id: selectedId || undefined,
           reuse_session_by_title: !selectedId,
@@ -120,23 +232,57 @@ export default function SessionsPage({ runtime }) {
           onEvent: (payload) => {
             setLiveEvents((prev) => [...prev, payload])
             if (payload.session_id) setSelectedId(payload.session_id)
+            if (payload.type === 'turn' && payload.turn?.role === 'user') {
+              setStreamTurns((prev) => mergeTurns(prev, payload.turn))
+            }
+            if (payload.type === 'reply_start') {
+              setAssistantDraft((prev) => prev || { content: '', ts: payload.ts || localTs, status: 'loading' })
+            }
+            if (payload.type === 'final_reply') {
+              const replyText = payload.reply || payload.turn?.content || ''
+              revealReply(replyText, payload.turn?.ts || payload.ts || new Date().toISOString())
+            }
           },
           onFinal: async ({ snapshot: finalSnapshot, result }) => {
-            setSnapshot(finalSnapshot)
+            setPendingSnapshot(finalSnapshot)
             setSelectedId(result.session_id)
-            setLiveEvents([])
             await loadSessions(result.session_id)
           },
           onError: (payload) => {
             setError(payload.message || 'Runtime error')
+            setAssistantDraft(null)
+            setPendingSnapshot(null)
           },
         },
       )
     } catch (err) {
       setError(err.message || 'Failed to run requirement')
+      setAssistantDraft(null)
+      setPendingSnapshot(null)
     } finally {
       setRunning(false)
     }
+  }
+
+  useEffect(() => {
+    const el = chatScrollRef.current
+    if (!el || !shouldAutoScrollRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [assistantDraft?.content, processEvents.length, turns.length])
+
+  function handleChatScroll(event) {
+    const el = event.currentTarget
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    shouldAutoScrollRef.current = distanceToBottom < 96
+    setChatScrolling(true)
+    if (scrollStateTimerRef.current) window.clearTimeout(scrollStateTimerRef.current)
+    scrollStateTimerRef.current = window.setTimeout(() => setChatScrolling(false), 240)
+  }
+
+  function handleRequirementKeyDown(event) {
+    if (event.key !== 'Enter' || event.shiftKey) return
+    event.preventDefault()
+    event.currentTarget.form?.requestSubmit()
   }
 
   return (
@@ -145,7 +291,7 @@ export default function SessionsPage({ runtime }) {
 
       <div className={`grid min-h-0 flex-1 gap-3 overflow-hidden transition-all duration-300 ${drawerOpen ? 'xl:grid-cols-[1fr_280px]' : 'grid-cols-1'}`}>
         <section className="grid min-h-0 h-[86vh] grid-rows-[minmax(0,1fr)_auto] gap-3 overflow-hidden">
-          <div className="grid min-h-0 gap-3 overflow-hidden xl:grid-cols-[1.08fr_0.92fr]">
+          <div className="grid min-h-0 gap-3 overflow-hidden xl:grid-cols-[minmax(0,1.25fr)_312px]">
             <div className="flex min-h-0 flex-col overflow-hidden rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50">
               <div className="mb-4 flex items-center justify-between">
                 <div>
@@ -172,7 +318,7 @@ export default function SessionsPage({ runtime }) {
                 </div>
               </div>
 
-              <div className="scroll-soft min-h-0 flex-1 space-y-4 overflow-auto pr-1">
+              <div ref={chatScrollRef} onScroll={handleChatScroll} className={`scroll-ghost min-h-0 flex-1 space-y-4 overflow-auto pr-1 ${chatScrolling ? 'scrolling' : ''}`}>
                 <div>
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-xs uppercase tracking-[0.24em] text-white/30 light:text-zinc-500">Chat History</p>
@@ -188,155 +334,199 @@ export default function SessionsPage({ runtime }) {
                     )}
                     {turns.map((turn, index) => (
                       <div
-                        key={`${turn.ts || index}-${turn.role}`}
-                        className={`rounded-2xl border px-4 py-3 ${
-                          turn.role === 'user'
+                        key={buildTurnKey(turn, index)}
+                        className={`rounded-2xl border px-4 py-3 ${turn.role === 'user'
                             ? 'border-[#c2714c]/45 bg-[#c2714c] text-white shadow-[inset_0_1px_rgba(255,255,255,0.08)]'
                             : 'border-white/[0.04] bg-black/24 light:border-black/8 light:bg-white'
-                        }`}
+                          }`}
                       >
                         <div className="mb-2 flex items-center justify-between gap-3">
-                          <span className="text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">
+                          <span
+                            className={`text-[11px] uppercase tracking-[0.22em] ${turn.role === 'user' ? 'font-semibold text-white/80' : 'text-white/30 light:text-zinc-500'
+                              }`}
+                          >
                             {turn.role}
                           </span>
-                          <span className="text-[11px] text-white/26 light:text-zinc-400">{turn.ts || ''}</span>
+                          <span
+                            className={`text-[11px] ${turn.role === 'user' ? 'text-white/72' : 'text-white/26 light:text-zinc-400'
+                              }`}
+                          >
+                            {turn.ts || ''}
+                          </span>
                         </div>
                         <p className={`whitespace-pre-wrap break-words text-sm leading-6 ${turn.role === 'user' ? 'text-white' : 'text-white/78 light:text-zinc-700'}`}>
                           {turn.content}
+                          {turn.loading && (
+                            <span className="ml-2 inline-flex items-center gap-1 align-middle text-white/42 light:text-zinc-400">
+                              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                              <span className="text-xs">{assistantDraft?.status === 'loading' ? 'thinking' : 'streaming'}</span>
+                            </span>
+                          )}
                         </p>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                <div>
-                  <div className="mb-3 flex items-center justify-between">
-                    <p className="text-xs uppercase tracking-[0.24em] text-white/30 light:text-zinc-500">Runtime Events</p>
-                    <span className="rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] text-white/55 light:bg-black/6 light:text-zinc-500">
-                      {processEvents.length}
-                    </span>
-                  </div>
-                  <div className="rounded-2xl border border-white/[0.04] bg-black/18 p-3 light:border-black/8 light:bg-zinc-100">
-                    {processEvents.length === 0 && (
-                      <div className="rounded-2xl bg-black/24 px-4 py-3 text-sm text-white/50 light:bg-white light:text-zinc-600">
-                        No events yet.
-                      </div>
-                    )}
-                    {processEvents.map((eventItem, index) => (
-                      <div key={`${eventItem.ts || index}-${eventItem.type}`} className="border-b border-white/[0.04] px-1 py-2 last:border-b-0 light:border-black/8">
-                        <div className="mb-1 flex items-center justify-between gap-3">
-                          <span className="text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">{eventItem.type}</span>
-                          <span className="text-[11px] text-white/26 light:text-zinc-400">{eventItem.ts || ''}</span>
-                        </div>
-                        <p className="whitespace-pre-wrap break-words text-sm leading-6 text-white/68 light:text-zinc-700">{formatEvent(eventItem)}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </div>
             </div>
 
-            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
-              <div className="rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50">
-                <div className="mb-4 flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.28em] text-white/30 light:text-zinc-500">Workflow</p>
-                    <h2 className="mt-2 text-lg font-semibold text-paper-50 light:text-zinc-900">任务编排</h2>
+            <aside className="min-h-0 overflow-hidden rounded-[24px] border border-white/[0.05] bg-black/14 light:border-black/0 light:bg-transparent">
+              
+              
+              
+              <div className="scroll-soft grid h-full min-h-0 gap-3 overflow-auto pr-1 xl:grid-rows-[auto_auto_auto_minmax(0,1fr)]">
+                
+                
+                
+                
+                <div className="min-w-0 rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="min-w-0 pr-2">
+                      <p className="text-xs uppercase tracking-[0.28em] text-white/30 light:text-zinc-500">Overview</p>
+                      <h2 className="mt-2 text-lg font-semibold text-paper-50 light:text-zinc-900">会话概览</h2>
+                    </div>
+                    <SectionToggle open={overviewOpen} count={running ? 'running' : 'ready'} onClick={() => setOverviewOpen((v) => !v)} />
                   </div>
-                  <span className="rounded-full bg-white/[0.06] px-3 py-1 text-xs text-white/55 light:bg-black/6 light:text-zinc-500">
-                    {workflowTasks.length}
-                  </span>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-2">
-                  {workflowTasks.length === 0 && (
-                    <div className="rounded-2xl border border-white/[0.04] bg-black/24 p-4 text-sm text-white/50 light:border-black/8 light:bg-white light:text-zinc-600">
-                      No workflow yet.
+                  {overviewOpen && (
+                    <div className="grid gap-2">
+                      <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 light:border-black/8 light:bg-white">
+                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">Title</p>
+                        <p className="mt-2 text-sm text-paper-50 light:text-zinc-900">{sessionMeta.title || 'web-console'}</p>
+                      </div>
+                      <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 light:border-black/8 light:bg-white">
+                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">Updated</p>
+                        <p className="mt-2 text-sm text-paper-50 light:text-zinc-900">{formatTime(sessionMeta.updated_at)}</p>
+                      </div>
+                      <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 light:border-black/8 light:bg-white">
+                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">Latest Status</p>
+                        <p className="mt-2 text-sm text-paper-50 light:text-zinc-900">{latestEvent ? formatEvent(latestEvent) : 'No activity yet.'}</p>
+                      </div>
+                      {workflowTasks.length > 0 && (
+                        <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 light:border-black/8 light:bg-white">
+                          <p className="text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">Current Plan</p>
+                          <p className="mt-2 text-sm text-paper-50 light:text-zinc-900">{workflowTasks.map((task) => task.kind).join(' -> ')}</p>
+                        </div>
+                      )}
                     </div>
                   )}
-                  {workflowTasks.map((task) => (
-                    <div key={task.id} className="rounded-2xl border border-white/[0.04] bg-black/24 p-4 light:border-black/8 light:bg-white">
-                      <div className="mb-3 flex items-center justify-between">
-                        <span className="text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">{task.id}</span>
-                        <span className="rounded-full bg-white/[0.06] px-2.5 py-1 text-xs text-white/55 light:bg-black/6 light:text-zinc-500">
-                          {task.kind}
-                        </span>
-                      </div>
-                      <p className="text-sm font-medium text-paper-50 light:text-zinc-900">{task.description}</p>
-                      <p className="mt-2 text-xs text-white/42 light:text-zinc-500">{task.skill_id || 'default skill'}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid min-h-0 gap-3 overflow-hidden xl:grid-cols-[0.95fr_1.05fr]">
-                <div className="flex min-h-0 flex-col overflow-hidden rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50">
-                  <div className="mb-4 flex items-center justify-between">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.28em] text-white/30 light:text-zinc-500">Trace</p>
-                      <h2 className="mt-2 text-lg font-semibold text-paper-50 light:text-zinc-900">执行轨迹</h2>
-                    </div>
-                    <span className="rounded-full bg-white/[0.06] px-3 py-1 text-xs text-white/55 light:bg-black/6 light:text-zinc-500">
-                      {toolRows.length}
-                    </span>
-                  </div>
-
-                  <div className="scroll-soft min-h-0 flex-1 space-y-3 overflow-auto pr-1">
-                    {toolRows.length === 0 && (
-                      <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 text-sm text-white/50 light:border-black/8 light:bg-white light:text-zinc-600">
-                        No tool trace yet.
-                      </div>
-                    )}
-                    {toolRows.map((row) => {
-                      const data = (row.result || {}).data || {}
-                      return (
-                        <div key={`${row.step_id}-${row.tool}-${row.ts}`} className="rounded-2xl border border-white/[0.04] bg-black/24 p-4 light:border-black/8 light:bg-white">
-                          <div className="flex items-center justify-between gap-3">
-                            <p className="font-mono text-sm text-paper-50 light:text-zinc-900">{row.step_id}</p>
-                            <span className="rounded-full bg-white/[0.06] px-2.5 py-1 text-xs text-white/55 light:bg-black/6 light:text-zinc-500">
-                              {row.tool}
-                            </span>
-                          </div>
-                          <p className="mt-3 text-sm text-white/62 light:text-zinc-600">{data.path || data.script || JSON.stringify(row.input)}</p>
-                          {'exit_code' in data && (
-                            <p className="mt-2 text-xs text-white/36 light:text-zinc-500">exit_code: {String(data.exit_code)}</p>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
                 </div>
 
-                <div className="flex min-h-0 flex-col overflow-hidden rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50">
+                <div className="min-w-0 rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50">
                   <div className="mb-4 flex items-center justify-between">
-                    <div>
+                    <div className="min-w-0 pr-2">
                       <p className="text-xs uppercase tracking-[0.28em] text-white/30 light:text-zinc-500">Output</p>
                       <h2 className="mt-2 text-lg font-semibold text-paper-50 light:text-zinc-900">产物文件</h2>
                     </div>
-                    <span className="rounded-full bg-white/[0.06] px-3 py-1 text-xs text-white/55 light:bg-black/6 light:text-zinc-500">
-                      {snapshot?.task_output_dir || '-'}
-                    </span>
+                    <SectionToggle open={outputsOpen} count={outputFiles.length} onClick={() => setOutputsOpen((v) => !v)} />
                   </div>
-
-                  <div className="scroll-soft min-h-0 flex-1 space-y-3 overflow-auto pr-1">
-                    {outputFiles.length === 0 && (
-                      <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 text-sm text-white/50 light:border-black/8 light:bg-white light:text-zinc-600">
-                        No output files yet.
+                  {outputsOpen && (
+                    <>
+                      <div className="mb-3 rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 light:border-black/8 light:bg-white">
+                        <p className="text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">Output Dir</p>
+                        <p className="mt-2 break-all font-mono text-xs text-white/62 light:text-zinc-700">{effectiveSnapshot?.task_output_dir || '-'}</p>
                       </div>
-                    )}
-                    {outputFiles.map((file) => (
-                      <div key={file.path} className="rounded-2xl border border-white/[0.04] bg-black/24 p-4 light:border-black/8 light:bg-white">
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="font-medium text-paper-50 light:text-zinc-900">{file.relative_path}</p>
-                          <span className="text-xs text-white/36 light:text-zinc-500">{formatBytes(file.size)}</span>
-                        </div>
-                        <p className="mt-2 font-mono text-xs text-white/34 light:text-zinc-500">{file.path}</p>
+                      <div className="space-y-3">
+                        {outputFiles.length === 0 && (
+                          <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 text-sm text-white/50 light:border-black/8 light:bg-white light:text-zinc-600">
+                            当前这轮没有扫描到产物文件。如果目录里实际有文件，说明后端快照拿到的不是你期望的那一轮输出。
+                          </div>
+                        )}
+                        {outputFiles.slice(0, 6).map((file) => (
+                          <div key={file.path} className="rounded-2xl border border-white/[0.04] bg-black/24 p-4 light:border-black/8 light:bg-white">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="min-w-0 break-all font-medium text-paper-50 light:text-zinc-900">{file.relative_path}</p>
+                              <span className="text-xs text-white/36 light:text-zinc-500">{formatBytes(file.size)}</span>
+                            </div>
+                            <p className="mt-2 break-all font-mono text-xs text-white/34 light:text-zinc-500">{file.path}</p>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    </>
+                  )}
                 </div>
+
+                <div className="min-w-0 rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="min-w-0 pr-2">
+                      <p className="text-xs uppercase tracking-[0.28em] text-white/30 light:text-zinc-500">Recent Activity</p>
+                      <h2 className="mt-2 text-lg font-semibold text-paper-50 light:text-zinc-900">最近动作</h2>
+                    </div>
+                    <SectionToggle open={activityOpen} count={recentTools.length} onClick={() => setActivityOpen((v) => !v)} />
+                  </div>
+                  {activityOpen && (
+                    <div className="space-y-3">
+                      {recentTools.length === 0 && (
+                        <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 text-sm text-white/50 light:border-black/8 light:bg-white light:text-zinc-600">
+                          No recent tool activity.
+                        </div>
+                      )}
+                      {recentTools.map((row) => {
+                        const data = (row.result || {}).data || {}
+                        return (
+                          <div key={`${row.step_id}-${row.tool}-${row.ts}`} className="rounded-2xl border border-white/[0.04] bg-black/24 p-4 light:border-black/8 light:bg-white">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="min-w-0 break-all font-mono text-sm text-paper-50 light:text-zinc-900">{row.tool}</p>
+                              <span className="text-[11px] text-white/36 light:text-zinc-500">{row.step_id}</span>
+                            </div>
+                            <p className="mt-2 break-all text-sm text-white/62 light:text-zinc-700">{data.path || data.script || formatTime(row.ts)}</p>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className={`min-w-0 ${eventsOpen ? 'h-[400px]' : 'h-[120px]'} rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50`}>
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="min-w-0 pr-2">
+                      <p className="text-xs uppercase tracking-[0.28em] text-white/30 light:text-zinc-500">Runtime Events</p>
+                      <h2 className="mt-2 text-lg font-semibold text-paper-50 light:text-zinc-900">运行日志</h2>
+                    </div>
+                    <SectionToggle open={eventsOpen} count={processEvents.length} onClick={() => setEventsOpen((v) => !v)} />
+                  </div>
+                  {eventsOpen ? (
+                    <div className="space-y-3">
+                      <div className="rounded-2xl p-3">
+                        <div className="scroll-soft max-h-[34vh] space-y-2 overflow-auto pr-1">
+                          {processEvents.length === 0 && (
+                            <div className="rounded-2xl bg-black/24 px-4 py-3 text-sm text-white/50 light:bg-white light:text-zinc-600">
+                              No events yet.
+                            </div>
+                          )}
+                          {processEvents.map((eventItem, index) => (
+                            <div key={`${eventItem.ts || index}-${eventItem.type}`} className="min-w-0 rounded-2xl border border-white/[0.04] bg-black/24 px-3 py-2 light:border-black/8 light:bg-white">
+                              <div className="mb-1 flex min-w-0 flex-col gap-1">
+                                <span className="truncate text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">
+                                  {eventItem.type}
+                                </span>
+                                <span className="text-[11px] text-white/26 light:text-zinc-400">{eventItem.ts || ''}</span>
+                              </div>
+                              <p className="whitespace-pre-wrap break-words text-sm leading-6 text-white/68 light:text-zinc-700">{formatEvent(eventItem)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-white/[0.04] bg-black/24 px-4 py-3 text-sm text-white/50 light:border-black/8 light:bg-white light:text-zinc-600">
+                      点击 `Show {processEvents.length}` 查看原始运行日志。
+                    </div>
+                  )}
+                </div>
+
+
+
+
+
+
               </div>
-            </div>
+
+
+
+
+
+            </aside>
           </div>
 
           <form onSubmit={handleRun} className="rounded-[24px] border border-white/[0.05] bg-black/22 p-4 light:border-black/8 light:bg-zinc-50">
@@ -357,10 +547,18 @@ export default function SessionsPage({ runtime }) {
             <textarea
               value={requirement}
               onChange={(e) => setRequirement(e.target.value)}
+              onKeyDown={handleRequirementKeyDown}
               rows={4}
+              disabled={running}
               className="w-full resize-y rounded-3xl border border-white/[0.05] bg-black/24 p-4 text-sm leading-6 text-white/82 outline-none placeholder:text-white/25 light:border-black/8 light:bg-white light:text-zinc-900 light:placeholder:text-zinc-400"
-              placeholder="输入你的任务需求"
+              placeholder="输入你的任务需求，Enter 发送，Shift+Enter 换行"
             />
+
+            {running && (
+              <div className="mt-4 rounded-2xl border border-mint/20 bg-mint/10 px-4 py-3 text-sm text-mint">
+                请求已发送，运行中。输入框已锁定，问答区与流程区会持续更新。
+              </div>
+            )}
 
             {error && (
               <div className="mt-4 rounded-2xl border border-rust-500/20 bg-rust-500/10 px-4 py-3 text-sm text-rust-200">
@@ -370,7 +568,7 @@ export default function SessionsPage({ runtime }) {
           </form>
         </section>
 
-        <aside className={`overflow-hidden rounded-[24px] border border-white/[0.05] bg-black/28 transition-all duration-300 light:border-black/8 light:bg-zinc-50 ${drawerOpen ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0 xl:w-0'}`}>
+        <aside className={`overflow-scroll rounded-[24px] border border-white/[0.05] bg-black/28 transition-all duration-300 light:border-black/8 light:bg-zinc-50 ${drawerOpen ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0 xl:w-0'}`}>
           <div className="flex h-full min-h-0 flex-col p-4">
             <div className="mb-4 pr-10">
               <p className="text-xs uppercase tracking-[0.28em] text-white/30 light:text-zinc-500">Sessions</p>
@@ -385,11 +583,10 @@ export default function SessionsPage({ runtime }) {
                     setSelectedId(row.id)
                     setDrawerOpen(false)
                   }}
-                  className={`w-full rounded-[20px] border p-4 text-left transition ${
-                    row.id === selectedId
+                  className={`w-full rounded-[20px] border p-4 text-left transition ${row.id === selectedId
                       ? 'border-rust-400/28 bg-rust-500/10'
                       : 'border-white/[0.04] bg-black/20 hover:bg-black/28 light:border-black/8 light:bg-white light:hover:bg-zinc-100'
-                  }`}
+                    }`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>

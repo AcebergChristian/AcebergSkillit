@@ -36,3 +36,42 @@ body,
   background: rgba(255, 255, 255, 0.12);
   border-radius: 999px;
 }
+
+.scroll-ghost {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.scroll-ghost:hover,
+.scroll-ghost:focus-within,
+.scroll-ghost.scrolling {
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+body.light .scroll-ghost:hover,
+body.light .scroll-ghost:focus-within,
+body.light .scroll-ghost.scrolling {
+  scrollbar-color: rgba(24, 24, 27, 0.18) transparent;
+}
+
+.scroll-ghost::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scroll-ghost::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  transition: background 160ms ease;
+}
+
+.scroll-ghost:hover::-webkit-scrollbar-thumb,
+.scroll-ghost:focus-within::-webkit-scrollbar-thumb,
+.scroll-ghost.scrolling::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+body.light .scroll-ghost:hover::-webkit-scrollbar-thumb,
+body.light .scroll-ghost:focus-within::-webkit-scrollbar-thumb,
+body.light .scroll-ghost.scrolling::-webkit-scrollbar-thumb {
+  background: rgba(24, 24, 27, 0.18);
+}
