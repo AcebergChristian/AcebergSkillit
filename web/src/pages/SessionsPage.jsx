@@ -25,7 +25,148 @@ function formatTime(value) {
   if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString()
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function truncatePreview(text, max = 120) {
+  const value = String(text || '').trim()
+  if (!value) return ''
+  return value.length > max ? `${value.slice(0, max)}...` : value
+}
+
+function toTimestamp(value) {
+  if (!value) return Number.NaN
+  const time = new Date(value).getTime()
+  return Number.isNaN(time) ? Number.NaN : time
+}
+
+function buildProcessSteps(events, running) {
+  const steps = []
+  for (const event of events || []) {
+    if (!event) continue
+    if (event.type === 'session') {
+      steps.push({ id: `${event.ts}-session`, title: 'Session Started', detail: event.message || 'session created', ts: event.ts, state: 'done' })
+      continue
+    }
+    if (event.type === 'task_dir') {
+      steps.push({ id: `${event.ts}-task_dir`, title: 'Prepare Workspace', detail: event.task_dir || 'task directory ready', ts: event.ts, state: 'done' })
+      continue
+    }
+    if (event.type === 'workflow') {
+      const tasks = event.workflow?.tasks || []
+      if (tasks.length === 0) {
+        steps.push({ id: `${event.ts}-workflow`, title: 'Thinking', detail: 'workflow ready', ts: event.ts, state: 'done' })
+      } else {
+        tasks.forEach((task, idx) => {
+          steps.push({
+            id: `${event.ts}-${task.id || idx}`,
+            title: `Thinking · ${idx + 1}/${tasks.length}`,
+            detail: `${task.kind}: ${task.description}`,
+            ts: event.ts,
+            state: 'done',
+          })
+        })
+      }
+      continue
+    }
+    if (event.type === 'skill') {
+      steps.push({ id: `${event.ts}-skill`, title: 'Pick Skill', detail: event.message || event.skill_id || 'skill selected', ts: event.ts, state: 'done' })
+      continue
+    }
+    if (event.type === 'plan') {
+      const planSteps = event.plan?.steps || []
+      planSteps.forEach((step, idx) => {
+        steps.push({
+          id: `${event.ts}-${step.id || idx}`,
+          title: `Plan · ${idx + 1}/${planSteps.length}`,
+          detail: step.kind === 'tool' ? `${step.tool || 'tool'}: ${step.description}` : step.description,
+          ts: event.ts,
+          state: 'done',
+        })
+      })
+      continue
+    }
+    if (event.type === 'tool') {
+      const detail = event.tool === 'write_text'
+        ? `${event.path || 'file written'}${event.preview ? `\n${truncatePreview(event.preview)}` : ''}`
+        : event.path || event.script || event.step_id || 'tool call'
+      steps.push({
+        id: `${event.ts}-${event.step_id || 'tool'}`,
+        title: event.ok ? `Execute · ${event.tool}` : `Failed · ${event.tool}`,
+        detail,
+        ts: event.ts,
+        state: event.ok ? 'done' : 'error',
+      })
+      continue
+    }
+    if (event.type === 'run' || event.type === 'repair') {
+      const ok = event.exit_code === 0
+      steps.push({
+        id: `${event.ts}-${event.type}`,
+        title: event.type === 'repair' ? 'Repair Script' : 'Run Script',
+        detail: `${event.path || event.script || 'script'} exit=${event.exit_code ?? '-'}`,
+        ts: event.ts,
+        state: ok ? 'done' : 'error',
+      })
+      continue
+    }
+    if (event.type === 'reply_start') {
+      steps.push({ id: `${event.ts}-reply_start`, title: 'Generate Reply', detail: 'model is drafting the answer', ts: event.ts, state: 'done' })
+      continue
+    }
+    if (event.type === 'final_reply') {
+      steps.push({ id: `${event.ts}-final_reply`, title: 'Reply Ready', detail: 'answer streamed to chat', ts: event.ts, state: 'done' })
+      continue
+    }
+  }
+
+  if (steps.length > 0) {
+    const lastNonError = [...steps].reverse().find((step) => step.state !== 'error')
+    if (lastNonError) {
+      lastNonError.state = 'active'
+    }
+  }
+  return steps
+}
+
+function buildAssistantStepMap(turns, events) {
+  const map = new Map()
+  const eventRows = (events || []).map((event, index) => ({
+    event,
+    index,
+    ts: toTimestamp(event?.ts),
+  }))
+
+  for (let i = 0; i < turns.length; i += 1) {
+    const turn = turns[i]
+    if (turn.role !== 'assistant') continue
+
+    let userIndex = -1
+    for (let j = i - 1; j >= 0; j -= 1) {
+      if (turns[j].role === 'user') {
+        userIndex = j
+        break
+      }
+    }
+    if (userIndex === -1) continue
+
+    const startTs = toTimestamp(turns[userIndex].ts)
+    const endTs = toTimestamp(turn.ts)
+    const scopedEvents = eventRows
+      .filter((row) => {
+        if (Number.isNaN(startTs)) return false
+        if (Number.isNaN(row.ts)) return false
+        if (row.ts < startTs) return false
+        if (!Number.isNaN(endTs) && row.ts > endTs) return false
+        return true
+      })
+      .map((row) => row.event)
+
+    map.set(buildTurnKey(turn, i), buildProcessSteps(scopedEvents, false))
+  }
+
+  return map
 }
 
 function buildTurnKey(turn, index = 0) {
@@ -151,9 +292,10 @@ export default function SessionsPage({ runtime }) {
   const effectiveSnapshot = pendingSnapshot || snapshot
 
   const processEvents = useMemo(() => {
-    if (liveEvents.length > 0) return liveEvents
-    return effectiveSnapshot?.events || []
-  }, [effectiveSnapshot, liveEvents])
+    const persistedEvents = snapshot?.events || []
+    if (liveEvents.length > 0) return [...persistedEvents, ...liveEvents]
+    return effectiveSnapshot?.events || persistedEvents
+  }, [effectiveSnapshot, liveEvents, snapshot])
 
   const turns = useMemo(() => {
     let items = snapshot?.turns || []
@@ -177,6 +319,8 @@ export default function SessionsPage({ runtime }) {
   const recentTools = toolRows.slice(-5).reverse()
   const sessionMeta = effectiveSnapshot?.session || snapshot?.session || {}
   const latestEvent = processEvents[processEvents.length - 1]
+  const processSteps = useMemo(() => buildProcessSteps(liveEvents, running), [liveEvents, running])
+  const assistantStepMap = useMemo(() => buildAssistantStepMap(turns, effectiveSnapshot?.events || snapshot?.events || []), [effectiveSnapshot, snapshot, turns])
 
   function revealReply(content, ts) {
     if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current)
@@ -332,7 +476,12 @@ export default function SessionsPage({ runtime }) {
                         No messages yet.
                       </div>
                     )}
-                    {turns.map((turn, index) => (
+                    {turns.map((turn, index) => {
+                      const isLatestAssistant = turn.role === 'assistant' && index === turns.length - 1
+                      const persistedSteps = assistantStepMap.get(buildTurnKey(turn, index)) || []
+                      const scopedSteps = isLatestAssistant && processSteps.length > 0 ? processSteps : persistedSteps
+                      const showSteps = turn.role === 'assistant' && scopedSteps.length > 0
+                      return (
                       <div
                         key={buildTurnKey(turn, index)}
                         className={`rounded-2xl border px-4 py-3 ${turn.role === 'user'
@@ -351,10 +500,41 @@ export default function SessionsPage({ runtime }) {
                             className={`text-[11px] ${turn.role === 'user' ? 'text-white/72' : 'text-white/26 light:text-zinc-400'
                               }`}
                           >
-                            {turn.ts || ''}
+                            {formatTime(turn.ts)}
                           </span>
                         </div>
-                        <p className={`whitespace-pre-wrap break-words text-sm leading-6 ${turn.role === 'user' ? 'text-white' : 'text-white/78 light:text-zinc-700'}`}>
+                        {showSteps && (
+                          <div className="mt-4 rounded-2xl border border-white/[0.04] bg-black/18 p-4 light:border-black/8 light:bg-zinc-100">
+                            <div className="mb-3 flex items-center justify-between">
+                              <p className="text-xs uppercase tracking-[0.24em] text-white/30 light:text-zinc-500">Process Steps</p>
+                              <span className="rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] text-white/55 light:bg-black/6 light:text-zinc-500">
+                                {scopedSteps.length}
+                              </span>
+                            </div>
+                            <div className="space-y-0">
+                              {scopedSteps.map((step, stepIndex) => (
+                                <div key={step.id} className="flex gap-3">
+                                  <div className="flex w-5 shrink-0 flex-col items-center">
+                                    <span
+                                      className={`mt-1 h-2.5 w-2.5 rounded-full ${
+                                        step.state === 'error' ? 'bg-rust-400' : step.state === 'active' ? 'bg-mint shadow-[0_0_0_4px_rgba(121,210,176,0.12)]' : 'bg-white/30 light:bg-zinc-400'
+                                      }`}
+                                    />
+                                    {stepIndex < processSteps.length - 1 && <span className="mt-1 h-full w-px bg-white/[0.08] light:bg-black/8" />}
+                                  </div>
+                                  <div className="min-w-0 flex-1 pb-4">
+                                    <div className="mb-1 flex items-center justify-between gap-3">
+                                      <p className="min-w-0 truncate text-sm font-medium text-paper-50 light:text-zinc-900">{step.title}</p>
+                                      <span className="shrink-0 text-[11px] text-white/30 light:text-zinc-500">{formatTime(step.ts)}</span>
+                                    </div>
+                                    <p className="whitespace-pre-wrap break-words text-sm leading-6 text-white/62 light:text-zinc-700">{step.detail}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <p className={`${showSteps ? 'mt-4' : ''} whitespace-pre-wrap break-words text-sm leading-6 ${turn.role === 'user' ? 'text-white' : 'text-white/78 light:text-zinc-700'}`}>
                           {turn.content}
                           {turn.loading && (
                             <span className="ml-2 inline-flex items-center gap-1 align-middle text-white/42 light:text-zinc-400">
@@ -364,7 +544,7 @@ export default function SessionsPage({ runtime }) {
                           )}
                         </p>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 </div>
 
@@ -500,7 +680,7 @@ export default function SessionsPage({ runtime }) {
                                 <span className="truncate text-[11px] uppercase tracking-[0.22em] text-white/30 light:text-zinc-500">
                                   {eventItem.type}
                                 </span>
-                                <span className="text-[11px] text-white/26 light:text-zinc-400">{eventItem.ts || ''}</span>
+                                <span className="text-[11px] text-white/26 light:text-zinc-400">{formatTime(eventItem.ts)}</span>
                               </div>
                               <p className="whitespace-pre-wrap break-words text-sm leading-6 text-white/68 light:text-zinc-700">{formatEvent(eventItem)}</p>
                             </div>
@@ -554,12 +734,6 @@ export default function SessionsPage({ runtime }) {
               placeholder="输入你的任务需求，Enter 发送，Shift+Enter 换行"
             />
 
-            {running && (
-              <div className="mt-4 rounded-2xl border border-mint/20 bg-mint/10 px-4 py-3 text-sm text-mint">
-                请求已发送，运行中。输入框已锁定，问答区与流程区会持续更新。
-              </div>
-            )}
-
             {error && (
               <div className="mt-4 rounded-2xl border border-rust-500/20 bg-rust-500/10 px-4 py-3 text-sm text-rust-200">
                 {error}
@@ -602,7 +776,7 @@ export default function SessionsPage({ runtime }) {
                       {row.status}
                     </span>
                   </div>
-                  <p className="mt-3 text-[11px] text-white/32 light:text-zinc-500">{row.updated_at}</p>
+                  <p className="mt-3 text-[11px] text-white/32 light:text-zinc-500">{formatTime(row.updated_at)}</p>
                 </button>
               ))}
             </div>

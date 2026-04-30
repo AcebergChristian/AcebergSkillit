@@ -16,6 +16,14 @@ function formatEvent(event) {
   return `[${event.type}] ${event.message || event.task_dir || event.skill_id || ''}`.trim()
 }
 
+function formatTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 export default function DashPage() {
   const [overview, setOverview] = useState(null)
   const [error, setError] = useState('')
@@ -76,7 +84,7 @@ export default function DashPage() {
             <div className="rounded-3xl bg-black/20 p-5 light:bg-zinc-50">
               <p className="text-xs uppercase tracking-[0.25em] text-white/35 light:text-zinc-500">Session</p>
               <p className="mt-3 font-mono text-sm text-white/60 light:text-zinc-700">{active?.id || '-'}</p>
-              <p className="mt-4 text-sm text-white/50 light:text-zinc-600">{active?.updated_at || '-'}</p>
+              <p className="mt-4 text-sm text-white/50 light:text-zinc-600">{formatTime(active?.updated_at)}</p>
             </div>
 
             <div className="rounded-3xl bg-black/20 p-5 light:bg-zinc-50">

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -194,6 +194,16 @@ class AgentExecutor:
         )
         self._emit(sid, event_callback, {"type": "reply_start", "session_id": sid, "message": "generating reply"})
         reply = self.llm.generate(context).text
+        embedded_tool_payloads, reply = self._maybe_execute_embedded_tool_blocks(
+            sid=sid,
+            reply=reply,
+            step_start=len(plan.steps) + 1,
+            event_callback=event_callback,
+        )
+        for payload in embedded_tool_payloads:
+            tool_results.append(payload)
+            self.sessions.append_tool_result(sid, payload)
+            self._emit(sid, event_callback, self._event_from_tool_payload(payload))
         auto_save = self._maybe_autosave_generated_file(
             sid=sid,
             task_dir=task_dir,
@@ -381,7 +391,7 @@ class AgentExecutor:
 
     def create_task_output_dir(self, sid: str) -> Path:
         session_root = self.session_output_dir(sid)
-        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
         path = session_root / stamp
         idx = 1
         while path.exists():
@@ -473,7 +483,7 @@ class AgentExecutor:
     def _should_autosave(user_input: str) -> bool:
         low = user_input.lower()
         create_markers = ["写", "创建", "生成", "保存"]
-        file_markers = [".py", ".js", ".sh", "脚本", "python", "文件"]
+        file_markers = [".py", ".js", ".sh", ".md", ".markdown", "脚本", "python", "markdown", "md", "文件", "文档"]
         return any(token in user_input for token in create_markers) and any(token in low or token in user_input for token in file_markers)
 
     @classmethod
@@ -559,19 +569,27 @@ class AgentExecutor:
             "js": ".js",
             "bash": ".sh",
             "sh": ".sh",
+            "markdown": ".md",
+            "md": ".md",
+            "text": ".txt",
+            "txt": ".txt",
         }.get(code_lang, ".py")
+        if ext == ".py" and any(token in low or token in user_input for token in [".md", "markdown", "文档"]):
+            ext = ".md"
         return stem + ext
 
     @staticmethod
     def _build_codegen_instruction(user_input: str, output_root: Path) -> str:
         parts = [
-            "For code-generation requests, return exactly one fenced code block with runnable code.",
-            "The code must be complete and executable without placeholders.",
+            "For file-generation requests, return exactly one fenced code block containing the final file content.",
+            "If the user asks for code, return runnable code. If the user asks for markdown/text/doc content, return the full document body in a fenced block.",
+            "Do not explain before or after the fenced block unless the user explicitly asks for explanation.",
             f"The process working directory is already the task output root: {output_root}",
             "Write generated artifacts directly into the current working directory using only file names like `news.xlsx`, `result.csv`, or `report.json`.",
             "Do not prepend `output/`, session ids, timestamps, or recreate parent folders in generated code.",
             "If the user names a target directory, treat it only as a naming hint. Do not create nested folders from it.",
             "If the task fetches many records, print only a small preview and a summary count.",
+            "If required information is missing and you cannot safely complete the request, do not guess. Ask a short numbered clarification list: `1. ... 2. ... 3. ...`.",
         ]
         low = user_input.lower()
         if "excel" in low or "xlsx" in low:
@@ -616,6 +634,69 @@ class AgentExecutor:
                 note += AgentExecutor._format_run_note(run_data)
             return reply.rstrip() + note
         return reply.rstrip() + f"\n\n尝试写入文件失败：{result.get('error', 'unknown error')}"
+
+    def _maybe_execute_embedded_tool_blocks(
+        self,
+        *,
+        sid: str,
+        reply: str,
+        step_start: int,
+        event_callback: Callable[[dict], None] | None = None,
+    ) -> tuple[list[dict], str]:
+        blocks = re.findall(r"```tool\s*\n(.*?)```", reply, flags=re.S)
+        if not blocks:
+            return [], reply
+
+        payloads: list[dict] = []
+        cleaned = reply
+        step_no = step_start
+        for block in blocks:
+            body = block.strip()
+            if body.startswith("write_text"):
+                path_match = re.search(r"path='([^']+)'", body)
+                content_match = re.search(r"content='(.*)'$", body, flags=re.S)
+                if not path_match or not content_match:
+                    continue
+                params = {
+                    "path": path_match.group(1),
+                    "content": content_match.group(1),
+                    "mode": "overwrite",
+                }
+                result = self.tools.run("write_text", params)
+                payload = {
+                    "ts": utc_now(),
+                    "step_id": f"s{step_no}",
+                    "depends_on": [],
+                    "tool": "write_text",
+                    "planned_input": {"path": params["path"], "content": "<embedded tool block>", "mode": "overwrite"},
+                    "input": params,
+                    "result": result,
+                }
+                payloads.append(payload)
+                step_no += 1
+            elif body.startswith("read_text"):
+                path_match = re.search(r"path='([^']+)'", body)
+                if not path_match:
+                    continue
+                params = {"path": path_match.group(1)}
+                result = self.tools.run("read_text", params)
+                payload = {
+                    "ts": utc_now(),
+                    "step_id": f"s{step_no}",
+                    "depends_on": [],
+                    "tool": "read_text",
+                    "planned_input": params,
+                    "input": params,
+                    "result": result,
+                }
+                payloads.append(payload)
+                step_no += 1
+
+        if payloads:
+            cleaned = re.sub(r"```tool\s*\n.*?```", "", cleaned, flags=re.S).strip()
+            if event_callback is not None:
+                self._emit(sid, event_callback, {"type": "skill", "session_id": sid, "message": "executed embedded tool blocks from model reply"})
+        return payloads, cleaned
 
     @staticmethod
     def _format_run_note(run_data: dict) -> str:
@@ -822,6 +903,9 @@ class AgentExecutor:
     def _event_from_tool_payload(payload: dict) -> dict:
         result = payload.get("result", {}) or {}
         data = result.get("data", {}) if isinstance(result, dict) else {}
+        raw_input = payload.get("input", {}) if isinstance(payload.get("input", {}), dict) else {}
+        input_content = str(raw_input.get("content", "")).strip()
+        preview = input_content[:120] + ("..." if len(input_content) > 120 else "") if input_content else ""
         return {
             "type": "tool",
             "ts": payload.get("ts"),
@@ -831,6 +915,7 @@ class AgentExecutor:
             "path": data.get("path") if isinstance(data, dict) else "",
             "script": data.get("script") if isinstance(data, dict) else "",
             "exit_code": data.get("exit_code") if isinstance(data, dict) else None,
+            "preview": preview,
         }
 
     def _latest_task_output_dir(self, sid: str) -> Path | None:
@@ -857,7 +942,7 @@ class AgentExecutor:
                     "path": str(path),
                     "relative_path": str(path.relative_to(base)),
                     "size": stat.st_size,
-                    "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                    "modified_at": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(),
                 }
             )
         out.sort(key=lambda item: item.get("modified_at", ""), reverse=True)
