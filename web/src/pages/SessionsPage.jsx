@@ -313,6 +313,8 @@ export default function SessionsPage({ runtime }) {
     }
     return items
   }, [assistantDraft, snapshot, streamTurns])
+
+  
   const toolRows = effectiveSnapshot?.tool_results || []
   const outputFiles = effectiveSnapshot?.outputs || []
   const workflowTasks = effectiveSnapshot?.workflow?.tasks || []
